@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.local/schemas/agent-dna/v1.json",
+  "title": "Forge Agent DNA (v1)",
+  "description": "The central contract of Forge: a complete, declarative agent definition. The runtime executes only what a document valid against this schema declares. Fail-closed governance fields are const-locked: a definition literally cannot disable them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["identity", "instructions", "tools", "knowledge", "model", "guardrails", "evals"],
+  "properties": {
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "slug", "version", "tenant_id", "type", "description"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Human-readable display name shown in the catalog."
+        },
+        "slug": {
+          "$ref": "#/$defs/slug",
+          "description": "Stable machine identifier; unique per tenant. Never changes across versions."
+        },
+        "version": {
+          "$ref": "#/$defs/semver",
+          "description": "Semver of this definition. Any change to the document requires a new version; historical runs reference the exact version that produced them (FR-A3)."
+        },
+        "tenant_id": {
+          "$ref": "#/$defs/slug",
+          "description": "Owning tenant. Multi-tenant-ready (NFR-4); a single tenant is active in v1."
+        },
+        "type": {
+          "enum": ["chatbot", "workflow", "autonomous"],
+          "description": "Interaction pattern: conversational (chatbot), triggered pipeline (workflow), or self-directed within guardrails (autonomous)."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "What this agent does, for the catalog and for evaluators."
+        }
+      }
+    },
+    "instructions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system_blocks", "task_prompt"],
+      "properties": {
+        "system_blocks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/versioned_ref" },
+          "uniqueItems": true,
+          "description": "Ordered references to reusable, versioned instruction blocks (policy, tone) shared across agents (FR-A5)."
+        },
+        "task_prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Agent-specific task instructions. Must reference governed knowledge by rule ID (R-xxx), never restate rule content — rules live in the knowledge layer, versioned and owned."
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "uniqueItems": true,
+      "description": "Explicit tool grants — least privilege (FR-C3). A tool absent from this list does not exist for the agent. All invocations pass through the tool gateway (FR-C1).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "autonomy"],
+        "properties": {
+          "ref": {
+            "$ref": "#/$defs/versioned_ref",
+            "description": "Reference to a tool contract in the gateway registry."
+          },
+          "autonomy": {
+            "enum": ["autonomous", "requires_approval", "forbidden"],
+            "description": "autonomous: gateway executes after validation. requires_approval: every invocation enters the HITL queue (FR-E2). forbidden: explicit denial, recorded so reviewers see the tool was considered and refused."
+          },
+          "config": {
+            "type": "object",
+            "description": "Optional per-agent tool configuration, validated by the tool's own config schema at the gateway."
+          }
+        }
+      }
+    },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collections", "authority_policy"],
+      "properties": {
+        "collections": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/versioned_ref" },
+          "uniqueItems": true,
+          "description": "Knowledge collections this agent may retrieve from. Each collection carries owner, date, and authority level metadata (FR-D1)."
+        },
+        "authority_policy": {
+          "const": "highest_wins",
+          "description": "Const-locked: on conflicting sources, the highest-authority source wins (sme_validated > policy_2023 > policy_2019); conflicts are surfaced, never silently averaged (FR-D2, R-090)."
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model_id", "temperature", "max_tokens_per_run", "max_cost_usd_per_run", "max_cost_usd_per_day"],
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/slug",
+          "description": "LLM gateway adapter to use (ADR-005). API keys live only in gateway config, never here."
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider-specific model identifier, resolved by the gateway adapter."
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "max_tokens_per_run": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Hard token budget per run, enforced by the LLM gateway (FR-B3)."
+        },
+        "max_cost_usd_per_run": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Hard cost ceiling per run; exceeding it stops the run and escalates."
+        },
+        "max_cost_usd_per_day": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Hard daily cost ceiling for this agent across all runs; exceeding it suspends further runs."
+        }
+      }
+    },
+    "guardrails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_steps", "timeout_seconds", "escalate_on_no_rule_match", "require_citations"],
+      "properties": {
+        "max_steps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Hard limit on reasoning-loop iterations per run (FR-B3)."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "description": "Wall-clock limit per run; on timeout the run escalates, it never silently completes."
+        },
+        "escalate_on_no_rule_match": {
+          "const": true,
+          "description": "Const-locked fail-closed default (R-091): when no rule matches or confidence is low, escalate — never guess, never execute."
+        },
+        "require_citations": {
+          "const": true,
+          "description": "Const-locked (R-092): every decision must cite the rule ID(s) applied; a decision without citations is rejected by the runtime."
+        }
+      }
+    },
+    "evals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite_ref", "publish_gate"],
+      "properties": {
+        "suite_ref": {
+          "$ref": "#/$defs/versioned_ref",
+          "description": "The evaluation suite this agent version must pass (FR-F1)."
+        },
+        "publish_gate": {
+          "const": true,
+          "description": "Const-locked (FR-F2): a version that fails its suite cannot be published. Not configurable — governance as a structural property."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 64
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "versioned_ref": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(@(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*))?$",
+      "description": "Reference to a registered artifact by slug, optionally pinned to a semver (`slug` or `slug@1.2.0`). Unpinned refs resolve to the latest published version at run start and are pinned in the run record."
+    }
+  }
+}

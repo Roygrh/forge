@@ -1,0 +1,55 @@
+{
+  "identity": {
+    "name": "Invoice Validator",
+    "slug": "invoice-validator",
+    "version": "1.0.0",
+    "tenant_id": "meridian-supply-co",
+    "type": "workflow",
+    "description": "Validates incoming vendor invoices for Meridian Supply Co. against the governed AP rule set (tacit rules v1.0.0): vendor trust, PO matching tolerances, amount thresholds, non-PO handling, duplicate/fraud guards, and urgency. Outputs exactly one action per invoice — auto_approve, escalate, block_escalate, or priority_queue — with rule citations."
+  },
+  "instructions": {
+    "system_blocks": [
+      "meridian-ap-compliance-baseline@1.0.0",
+      "forge-decision-discipline@1.0.0"
+    ],
+    "task_prompt": "You validate one vendor invoice per run against Meridian's governed AP rules, retrieved from your knowledge collections. Procedure: (1) Read the invoice with read_invoice. (2) Establish vendor context with get_vendor: trust tier, history length, prior invoice count, bank details on file. (3) If the invoice references a PO, run match_po and get_receipts; evaluate matching against the tolerance rules R-010 through R-013. (4) Apply the rule families in this order, most restrictive outcome wins on ties (R-090): duplicate and fraud guards R-040 through R-044 first; then amount thresholds R-020 and R-021; then vendor-trust rules R-001 through R-003 or non-PO rules R-030 through R-032; then urgency rules R-050 and R-051. (5) Decide exactly one action: auto_approve, escalate, block_escalate, or priority_queue. Call approve_invoice only when the decided action is auto_approve. When information is missing, use request_info_from_vendor rather than assuming. Never restate rule content from memory — retrieve it, and resolve any conflict between sources by authority (R-090). If no rule matches or your confidence is low, escalate and state that no rule matched (R-091). Every decision must cite the rule IDs applied (R-092)."
+  },
+  "tools": [
+    { "ref": "meridian-erp-read-invoice@1.0.0", "autonomy": "autonomous" },
+    { "ref": "meridian-erp-get-vendor@1.0.0", "autonomy": "autonomous" },
+    { "ref": "meridian-erp-match-po@1.0.0", "autonomy": "autonomous" },
+    { "ref": "meridian-erp-get-receipts@1.0.0", "autonomy": "autonomous" },
+    {
+      "ref": "meridian-erp-approve-invoice@1.0.0",
+      "autonomy": "autonomous",
+      "config": { "max_amount_usd": 10000 }
+    },
+    { "ref": "meridian-erp-request-info-from-vendor@1.0.0", "autonomy": "requires_approval" },
+    { "ref": "meridian-erp-schedule-payment@1.0.0", "autonomy": "forbidden" }
+  ],
+  "knowledge": {
+    "collections": [
+      "meridian-ap-tacit-rules@1.0.0",
+      "meridian-ap-policy-documents@1.0.0"
+    ],
+    "authority_policy": "highest_wins"
+  },
+  "model": {
+    "provider": "anthropic",
+    "model_id": "claude-haiku-4-5-20251001",
+    "temperature": 0,
+    "max_tokens_per_run": 60000,
+    "max_cost_usd_per_run": 0.25,
+    "max_cost_usd_per_day": 15
+  },
+  "guardrails": {
+    "max_steps": 16,
+    "timeout_seconds": 120,
+    "escalate_on_no_rule_match": true,
+    "require_citations": true
+  },
+  "evals": {
+    "suite_ref": "meridian-ap-eval-suite@1.0.0",
+    "publish_gate": true
+  }
+}
