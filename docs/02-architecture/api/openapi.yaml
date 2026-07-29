@@ -1,0 +1,817 @@
+openapi: 3.1.0
+info:
+  title: Forge Platform API
+  version: 1.0.0
+  description: >-
+    REST contract consumed by the Forge SPA (catalog, approval queue, trace
+    viewer). Consistent with the data model (data-model.md) and the agent DNA
+    contract (dna-schema.json). Governance is structural: publishing is
+    eval-gated (409 when the gate has not passed), approvals expire server-side
+    and there is no extend/auto-approve operation, and a role header
+    demonstrates segregation of duties (NFR-5). This is a demonstration
+    contract, not a production auth design.
+servers:
+  - url: /api/v1
+
+tags:
+  - name: Agents
+  - name: Runs
+  - name: Approvals
+  - name: Knowledge
+  - name: Evals
+  - name: Tools
+
+paths:
+  /agents:
+    get:
+      tags: [Agents]
+      summary: List agents in the catalog
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Agent' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Agents]
+      summary: Create an agent (identity only; versions are added separately)
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAgent' }
+      responses:
+        '201':
+          description: Agent created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Agent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /agents/{agentId}/versions:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      tags: [Agents]
+      summary: List versions of an agent
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AgentVersion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Agents]
+      summary: Create a new agent version (draft) from a DNA document
+      description: >-
+        The dna body is validated against dna-schema.json before the version is
+        accepted. Invalid DNA returns 400 with the validation errors in details.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAgentVersion' }
+      responses:
+        '201':
+          description: Draft version created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /agents/{agentId}/versions/{version}:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+      - $ref: '#/components/parameters/Version'
+    get:
+      tags: [Agents]
+      summary: Get one agent version, including its DNA
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Agent version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentVersion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /agents/{agentId}/versions/{version}/publish:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+      - $ref: '#/components/parameters/Version'
+    post:
+      tags: [Agents]
+      summary: Publish a version (hard eval gate)
+      description: >-
+        Transitions draft to published ONLY if the version has a completed eval
+        run with passed=true for its declared suite (FR-F2). If the gate has not
+        passed, the server returns 409 and does not publish. The gate cannot be
+        bypassed. Requires the configurator role.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Version published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentVersion' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >-
+            Publish gate not satisfied — the eval suite has not passed for this
+            version. The version remains in draft.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                code: publish_gate_unmet
+                message: Eval suite has not passed for this version
+                details:
+                  suite_ref: meridian-ap-eval-suite@1.0.0
+                  latest_eval_run_passed: false
+
+  /agents/{agentId}/versions/{version}/suspend:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+      - $ref: '#/components/parameters/Version'
+    post:
+      tags: [Agents]
+      summary: Suspend a published version (manual)
+      description: Halts new runs; history is retained. Requires the configurator role.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SuspendRequest' }
+      responses:
+        '200':
+          description: Version suspended
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentVersion' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Version is not in a suspendable state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /runs:
+    post:
+      tags: [Runs]
+      summary: Start a run of a published agent version
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StartRun' }
+      responses:
+        '202':
+          description: Run accepted and started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Agent version is not published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /runs/{runId}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      tags: [Runs]
+      summary: Get run status and summary
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /runs/{runId}/trace:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      tags: [Runs]
+      summary: Get the full run trace (steps, tool calls, decisions)
+      description: >-
+        A projection of the append-only events for this run (ADR-008). Every
+        model call, tool invocation, rule applied, and decision is present and
+        ordered, so the run is reconstructable (FR-G1).
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Ordered trace
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunTrace' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /approvals:
+    get:
+      tags: [Approvals]
+      summary: List approvals (defaults to pending)
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, granted, rejected, expired]
+            default: pending
+      responses:
+        '200':
+          description: Approval list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Approval' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /approvals/{approvalId}:
+    parameters:
+      - $ref: '#/components/parameters/ApprovalId'
+    get:
+      tags: [Approvals]
+      summary: Get one approval with its evidence
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Approval
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /approvals/{approvalId}/approve:
+    parameters:
+      - $ref: '#/components/parameters/ApprovalId'
+    post:
+      tags: [Approvals]
+      summary: Approve a pending action (resumes the run)
+      description: Requires the approver role. Fails if the approval is not pending.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Decision' }
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Approval is no longer pending (already decided or expired)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /approvals/{approvalId}/reject:
+    parameters:
+      - $ref: '#/components/parameters/ApprovalId'
+    post:
+      tags: [Approvals]
+      summary: Reject a pending action (cancels the run)
+      description: >-
+        Requires the approver role. There is deliberately no extend or
+        auto-approve operation — expiry is enforced server-side and always
+        cancels, never approves (FR-E3, fail-closed).
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Decision' }
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Approval is no longer pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /knowledge/collections:
+    get:
+      tags: [Knowledge]
+      summary: List knowledge collections with authority levels
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Collection list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/KnowledgeCollection' }
+
+  /knowledge/collections/{collectionId}/ingest:
+    parameters:
+      - $ref: '#/components/parameters/CollectionId'
+    post:
+      tags: [Knowledge]
+      summary: Trigger ingestion for a collection
+      description: >-
+        Chunks and embeds source documents into the collection. Requires the
+        configurator role.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IngestRequest' }
+      responses:
+        '202':
+          description: Ingestion accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestJob' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /knowledge/chunks/{chunkId}:
+    parameters:
+      - $ref: '#/components/parameters/ChunkId'
+    get:
+      tags: [Knowledge]
+      summary: Get a knowledge chunk with its authority level and citation
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Knowledge chunk
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KnowledgeChunk' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /eval/suites:
+    get:
+      tags: [Evals]
+      summary: List eval suites
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Suite list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EvalSuite' }
+
+  /eval/suites/{suiteId}/run:
+    parameters:
+      - $ref: '#/components/parameters/SuiteId'
+    post:
+      tags: [Evals]
+      summary: Run a suite against an agent version
+      description: >-
+        Executes every case in the suite and records a passed boolean that the
+        publish gate reads. Requires the configurator role.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RunSuiteRequest' }
+      responses:
+        '202':
+          description: Eval run started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvalRun' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /eval/runs/{evalRunId}:
+    parameters:
+      - $ref: '#/components/parameters/EvalRunId'
+    get:
+      tags: [Evals]
+      summary: Get eval run results (per-case and aggregate)
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Eval run results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvalRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /tools:
+    get:
+      tags: [Tools]
+      summary: List the registered tool catalog (read-only)
+      description: >-
+        The tools an agent may be granted in its DNA, with their typed in/out
+        contracts. Read-only — tools are registered out of band, never created
+        through this API.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Tool catalog
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Tool' }
+
+components:
+  parameters:
+    RoleHeader:
+      name: X-Forge-Role
+      in: header
+      required: true
+      description: >-
+        Demonstration role for segregation of duties (NFR-5). configurator may
+        create/version/publish/suspend agents, ingest knowledge, and run evals;
+        approver may decide approvals; viewer is read-only. A role that lacks
+        the permission for an operation gets 403. This is not authentication.
+      schema:
+        type: string
+        enum: [configurator, approver, viewer]
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Version:
+      name: version
+      in: path
+      required: true
+      description: Semver of the agent version, e.g. 1.0.0
+      schema: { type: string }
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ApprovalId:
+      name: approvalId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CollectionId:
+      name: collectionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ChunkId:
+      name: chunkId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SuiteId:
+      name: suiteId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EvalRunId:
+      name: evalRunId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: Malformed request or DNA that fails schema validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: The X-Forge-Role is not permitted to perform this operation (NFR-5)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, description: Stable machine-readable error code }
+        message: { type: string, description: Human-readable summary }
+        details:
+          type: object
+          additionalProperties: true
+          description: Optional structured context (e.g. validation errors)
+
+    CreateAgent:
+      type: object
+      required: [slug, name, type]
+      properties:
+        slug: { type: string, pattern: '^[a-z0-9]+(-[a-z0-9]+)*$' }
+        name: { type: string }
+        type: { type: string, enum: [chatbot, workflow, autonomous] }
+        description: { type: string }
+
+    Agent:
+      type: object
+      required: [id, tenant_id, slug, name, type]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        slug: { type: string }
+        name: { type: string }
+        type: { type: string, enum: [chatbot, workflow, autonomous] }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+
+    CreateAgentVersion:
+      type: object
+      required: [dna]
+      properties:
+        dna:
+          $ref: '#/components/schemas/Dna'
+
+    Dna:
+      type: object
+      description: >-
+        A complete agent DNA document. The authoritative structure is
+        dna-schema.json (JSON Schema draft 2020-12); it is validated there at
+        write time and is not re-declared field by field here so the contract
+        stays single-sourced. Top-level blocks: identity, instructions, tools,
+        knowledge, model, guardrails, evals. Fail-closed governance fields
+        (escalate_on_no_rule_match, require_citations, publish_gate,
+        authority_policy) are const-locked and cannot be disabled.
+      additionalProperties: true
+      externalDocs:
+        description: Agent DNA JSON Schema
+        url: ../dna-schema.json
+
+    AgentVersion:
+      type: object
+      required: [id, tenant_id, agent_id, version, status, dna]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        agent_id: { type: string, format: uuid }
+        version: { type: string, description: semver }
+        status: { type: string, enum: [draft, published, suspended] }
+        dna: { $ref: '#/components/schemas/Dna' }
+        published_eval_run_id:
+          type: [string, 'null']
+          format: uuid
+          description: The passing eval run that satisfied the publish gate, if published
+        published_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    SuspendRequest:
+      type: object
+      properties:
+        reason: { type: string }
+
+    StartRun:
+      type: object
+      required: [agent_id, version, input]
+      properties:
+        agent_id: { type: string, format: uuid }
+        version: { type: string, description: semver of a published version }
+        input:
+          type: object
+          additionalProperties: true
+          description: Trigger payload (e.g. the invoice reference to process)
+
+    Run:
+      type: object
+      required: [id, tenant_id, agent_version_id, status]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        agent_version_id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [running, awaiting_approval, completed, escalated, canceled, error]
+        trigger: { type: string }
+        total_tokens: { type: integer }
+        total_cost_usd: { type: number }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+
+    RunTrace:
+      type: object
+      required: [run_id, steps]
+      properties:
+        run_id: { type: string, format: uuid }
+        steps:
+          type: array
+          items: { $ref: '#/components/schemas/RunStep' }
+
+    RunStep:
+      type: object
+      required: [step_no, kind]
+      properties:
+        step_no: { type: integer }
+        kind: { type: string, enum: [reason, tool, decision] }
+        model_call:
+          type: object
+          additionalProperties: true
+          description: model id, tokens, cost when kind is reason
+        decision:
+          type: object
+          description: Final action and rule citations when kind is decision
+          properties:
+            action:
+              type: string
+              enum: [auto_approve, escalate, block_escalate, priority_queue]
+            citations:
+              type: array
+              items: { type: string, description: Rule ID, e.g. R-001 }
+        tool_invocation: { $ref: '#/components/schemas/ToolInvocation' }
+        created_at: { type: string, format: date-time }
+
+    ToolInvocation:
+      type: object
+      required: [id, tool_ref, autonomy, status]
+      properties:
+        id: { type: string, format: uuid }
+        tool_ref: { type: string, description: slug@semver }
+        autonomy: { type: string, enum: [autonomous, requires_approval, forbidden] }
+        args: { type: object, additionalProperties: true }
+        result: { type: object, additionalProperties: true }
+        status: { type: string, enum: [validated, executed, blocked, denied] }
+
+    Approval:
+      type: object
+      required: [id, tenant_id, run_id, status, expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        run_id: { type: string, format: uuid }
+        tool_invocation: { $ref: '#/components/schemas/ToolInvocation' }
+        status: { type: string, enum: [pending, granted, rejected, expired] }
+        expires_at:
+          type: string
+          format: date-time
+          description: Server-side deadline; on expiry the approval is canceled, never approved
+        decision: { type: [string, 'null'], enum: [approve, reject, null] }
+        decided_by: { type: [string, 'null'] }
+        decided_at: { type: [string, 'null'], format: date-time }
+        note: { type: [string, 'null'] }
+
+    Decision:
+      type: object
+      properties:
+        note: { type: string, description: Optional reviewer note recorded with the decision }
+
+    KnowledgeCollection:
+      type: object
+      required: [id, tenant_id, slug, authority_level]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        slug: { type: string }
+        name: { type: string }
+        authority_level:
+          type: string
+          enum: [sme_validated, policy_2023, policy_2019]
+        owner: { type: string }
+
+    IngestRequest:
+      type: object
+      required: [sources]
+      properties:
+        sources:
+          type: array
+          items:
+            type: object
+            required: [source_ref]
+            properties:
+              source_ref: { type: string, description: Document id or URI to ingest }
+
+    IngestJob:
+      type: object
+      required: [job_id, status]
+      properties:
+        job_id: { type: string, format: uuid }
+        status: { type: string, enum: [accepted, running, completed, failed] }
+
+    KnowledgeChunk:
+      type: object
+      required: [id, tenant_id, collection_id, authority_level, content]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        collection_id: { type: string, format: uuid }
+        source_ref: { type: string }
+        section: { type: string }
+        rule_id: { type: [string, 'null'], description: Citation ID such as R-040 }
+        authority_level:
+          type: string
+          enum: [sme_validated, policy_2023, policy_2019]
+        content: { type: string }
+
+    EvalSuite:
+      type: object
+      required: [id, tenant_id, slug, version]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        slug: { type: string }
+        name: { type: string }
+        version: { type: string, description: semver }
+        case_count: { type: integer }
+
+    RunSuiteRequest:
+      type: object
+      required: [agent_id, version]
+      properties:
+        agent_id: { type: string, format: uuid }
+        version: { type: string, description: semver of the version under test }
+
+    EvalRun:
+      type: object
+      required: [id, tenant_id, suite_id, agent_version_id, status]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        suite_id: { type: string, format: uuid }
+        agent_version_id: { type: string, format: uuid }
+        status: { type: string, enum: [running, completed] }
+        passed: { type: [boolean, 'null'], description: Publish-gate result }
+        total: { type: integer }
+        passed_count: { type: integer }
+        case_results:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string, description: Case code, e.g. E-14 }
+              passed: { type: boolean }
+              expected_action: { type: string }
+              actual_action: { type: string }
+              detail: { type: string }
+
+    Tool:
+      type: object
+      required: [ref, name]
+      properties:
+        ref: { type: string, description: slug@semver used in DNA tool grants }
+        name: { type: string }
+        description: { type: string }
+        input_schema:
+          type: object
+          additionalProperties: true
+          description: JSON Schema for the tool's arguments
+        output_schema:
+          type: object
+          additionalProperties: true
+          description: JSON Schema for the tool's result
