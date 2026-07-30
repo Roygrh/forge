@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forge-backend"
+version = "0.1.0"
+description = "Forge backend — governed agent factory (runtime, gateways, API)"
+requires-python = ">=3.12,<3.13"
+
+# Exact pins: the images an evaluator builds locally must be byte-identical to
+# the ones serving the public instance (ADR-009).
+dependencies = [
+  "fastapi==0.141.1",
+  "uvicorn[standard]==0.52.0",
+  "pydantic==2.13.4",
+  "pydantic-settings==2.14.2",
+  "sqlalchemy==2.0.51",
+  "alembic==1.18.5",
+  "psycopg[binary]==3.3.4",
+  "pgvector==0.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.1.1",
+  "httpx==0.28.1",
+  "ruff==0.16.0",
+  "mypy==2.3.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "F",   # pyflakes
+  "W",   # pycodestyle warnings
+  "I",   # import sorting
+  "B",   # bugbear
+  "UP",  # pyupgrade
+  "N",   # pep8-naming
+  "SIM", # flake8-simplify
+  "ANN", # type annotations (CLAUDE.md: full type hints)
+]
+
+[tool.ruff.lint.isort]
+# `alembic/` is a directory here, which otherwise makes the package look first-party.
+known-third-party = ["alembic"]
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic's generated scaffolding keeps its own conventions.
+"alembic/versions/*" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+disallow_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+no_implicit_optional = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

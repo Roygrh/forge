@@ -1,0 +1,54 @@
+# Forge reference deployment (ADR-009).
+#
+# `docker compose up` from this directory brings up the whole backend stack:
+# PostgreSQL 16 with pgvector, plus the FastAPI service. The same images serve
+# the local, evaluator, and public-demo environments — only env values differ.
+#
+# Credentials here are demo-grade on purpose and committed deliberately
+# (ADR-009: "secrets management is env-file grade ... the first hardening item").
+# Nothing in this file is a production auth design.
+
+name: forge
+
+services:
+  # PostgreSQL 16 + pgvector — the single store for relational state, the
+  # append-only events table, and knowledge embeddings (ADR-004).
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge
+      POSTGRES_DB: forge
+    ports:
+      # Published so migrations, the seed script, and pytest can run from the
+      # host against this same database (see src/backend/README.md).
+      - "5432:5432"
+    volumes:
+      - forge-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `api` waits for this to pass before starting, so the first connection
+      # attempt is never against a database still initialising.
+      test: ["CMD-SHELL", "pg_isready -U forge -d forge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # FastAPI backend. Phase 3.1 serves only GET /api/v1/health.
+  api:
+    build:
+      context: ../src/backend
+      dockerfile: Dockerfile
+    environment:
+      # Driver is pinned to psycopg 3; see app/config.py.
+      DATABASE_URL: postgresql+psycopg://forge:forge@db:5432/forge
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  forge-pgdata:
