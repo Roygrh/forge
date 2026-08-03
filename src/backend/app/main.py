@@ -1,9 +1,9 @@
 """Forge API — application entry point.
 
-Phase 3.1 is the walking skeleton's foundation: the app starts, talks to PostgreSQL,
-and exposes a health probe. The governance surface contracted in
-``docs/02-architecture/api/openapi.yaml`` (agents, runs, approvals, knowledge, evals)
-arrives in later phases, as does the agent runtime.
+Phase 3.2 completes the walking skeleton: the app starts, talks to PostgreSQL, and
+serves the run surface — start a run, read its status, read its trace. The rest of the
+governance surface contracted in ``docs/02-architecture/api/openapi.yaml`` (agents,
+approvals, knowledge, evals) arrives in later phases.
 """
 
 import asyncio
@@ -16,13 +16,20 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from app import __version__
+from app.api import install_error_handlers, runs_router
 from app.config import get_settings
 from app.db import check_database, get_async_engine
 
 # psycopg's async driver refuses Windows' default ProactorEventLoop. The deployment
-# target is Linux (ADR-009), where this is a no-op; it exists so the API and the test
-# suite also run natively on a Windows development machine. Process-wide runtime
-# configuration belongs at the entry point, which is why it is here and not in app.db.
+# target is Linux (ADR-009), where this is a no-op; it exists so the **test suite** runs
+# natively on a Windows development machine, where the client creates its own loop and
+# honours this policy. Process-wide runtime configuration belongs at the entry point,
+# which is why it is here and not in app.db.
+#
+# It does NOT cover `uvicorn app.main:app` on Windows: uvicorn installs its own event
+# loop policy after importing this module, and psycopg then fails to connect. Serve the
+# API on Windows through `docker compose up` (the documented path, and Linux inside the
+# container) rather than natively.
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -52,6 +59,9 @@ app = FastAPI(
     openapi_url=f"{settings.api_prefix}/openapi.json",
     docs_url=f"{settings.api_prefix}/docs",
 )
+
+install_error_handlers(app)
+app.include_router(runs_router, prefix=settings.api_prefix)
 
 
 @app.get(

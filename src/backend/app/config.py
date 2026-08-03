@@ -3,6 +3,9 @@
 The deployment supplies exactly one required value — ``DATABASE_URL`` — which keeps
 the compose file (ADR-009) and any cloud environment configured the same way. No
 secret ever lives in code or in a migration.
+
+``ANTHROPIC_API_KEY`` is optional and read here only: it is the one place a provider
+credential exists (ADR-005), and nothing in the platform runs without it.
 """
 
 from functools import lru_cache
@@ -22,6 +25,11 @@ class Settings(BaseSettings):
     app_name: str = "Forge Platform API"
     api_prefix: str = "/api/v1"
     database_url: str = DEFAULT_DATABASE_URL
+
+    # ADR-005: the gateway configuration holds the only copy of a provider key. It is
+    # never in a DNA document, a tool, or the frontend. Absent by default — the demo
+    # and the whole test suite run on the deterministic fake adapter.
+    anthropic_api_key: str | None = None
 
     @field_validator("database_url")
     @classmethod

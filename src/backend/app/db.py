@@ -13,7 +13,9 @@ import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from functools import lru_cache
+from typing import Annotated
 
+from fastapi import Depends
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
@@ -45,6 +47,10 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency yielding one session per request."""
     async with get_async_session_factory()() as session:
         yield session
+
+
+#: One session per request, for handlers that need the database.
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 async def check_database() -> bool:

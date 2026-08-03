@@ -19,6 +19,12 @@ dependencies = [
   "alembic==1.18.5",
   "psycopg[binary]==3.3.4",
   "pgvector==0.5.0",
+  # The DNA JSON Schema is the central contract (ADR-006); it is enforced with a
+  # real draft 2020-12 validator, not hand-rolled checks.
+  "jsonschema==4.26.0",
+  # One provider adapter behind the LLM gateway (ADR-005). Never imported outside
+  # app/llm/adapters/ — swapping providers must not touch the runtime.
+  "anthropic==0.120.2",
 ]
 
 [project.optional-dependencies]
@@ -27,10 +33,16 @@ dev = [
   "httpx==0.28.1",
   "ruff==0.16.0",
   "mypy==2.3.0",
+  "types-jsonschema==4.26.0.20260518",
 ]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+# The vendored copy of dna-schema.json travels with the package so the image is
+# self-contained; tests assert it is byte-identical to the docs/ original.
+"app.dna" = ["dna-schema.json"]
 
 [tool.ruff]
 line-length = 100

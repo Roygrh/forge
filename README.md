@@ -34,6 +34,6 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 | 5 | Deployment | ⬜ Planned |
 | 6 | Demo packaging | ⬜ Planned |
 
-The backend foundation runs today: `docker compose up` brings up PostgreSQL and the API, the full data model migrates cleanly, and the audit log is enforced append-only at the database level. See `src/backend/README.md` for the three-command quickstart.
-```
+**The walking skeleton runs end to end today.** `docker compose up` brings up PostgreSQL and the API; a seeded agent — a declarative DNA document, validated against `dna-schema.json` — is loaded by the runtime, which calls a model through the LLM gateway under the budgets its DNA declares, invokes a tool through the tool gateway after checking the autonomy its DNA grants, and reaches a decision that cites a rule ID. Every model call, tool call, decision, and refusal is appended to the audit log, and `GET /runs/{id}/trace` reconstructs the whole run from those events alone. It does this with no API key and no network: the provider is a line in the DNA, and swapping it is the only change needed to run the same agent against a real model.
 
+The business rules, knowledge retrieval, human approvals, and the eval gate are Phase 4 — the skeleton is deliberately trivial so that what it demonstrates is the *governance path*, not the agent. See `src/backend/README.md` for the three-command quickstart and a runnable trace.

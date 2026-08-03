@@ -654,6 +654,35 @@ components:
         steps:
           type: array
           items: { $ref: '#/components/schemas/RunStep' }
+        events:
+          type: array
+          description: >-
+            The raw append-only events the steps were projected from, in
+            append order, including lifecycle events that are not steps
+            (run.started, run.completed, run.escalated, run.failed). Served
+            alongside the projection so a reviewer can check the trace against
+            its source rather than trusting it (ADR-008).
+          items: { $ref: '#/components/schemas/RunEvent' }
+
+    RunEvent:
+      type: object
+      required: [event_id, type, actor, occurred_at, payload]
+      properties:
+        event_id:
+          type: integer
+          format: int64
+          description: Monotonic identity; ordering is part of the audit contract
+        type:
+          type: string
+          description: >-
+            run.started, model.called, tool.called, decision.made,
+            run.completed, run.escalated, run.failed
+        actor: { type: string, description: system, seed-script, or role:<role> }
+        occurred_at: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: true
+          description: Typed by event type
 
     RunStep:
       type: object
@@ -688,6 +717,12 @@ components:
         args: { type: object, additionalProperties: true }
         result: { type: object, additionalProperties: true }
         status: { type: string, enum: [validated, executed, blocked, denied] }
+        error:
+          type: [string, 'null']
+          description: >-
+            Why the gateway refused, when status is blocked or denied — unknown
+            tool, missing grant, forbidden tool, or invalid arguments (FR-C5).
+            Null for an executed invocation.
 
     Approval:
       type: object

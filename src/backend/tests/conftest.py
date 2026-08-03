@@ -75,6 +75,19 @@ def engine(migrated_database: None) -> Iterator[Engine]:
 
 
 @pytest.fixture
+def committed_session(engine: Engine) -> Iterator[Session]:
+    """A session that really commits, for fixtures the API must be able to see.
+
+    The rolled-back ``session`` fixture below cannot be used to set up an API test: the
+    app runs on its own connection and would never see an uncommitted row. Rows written
+    here survive the test, which is harmless — the whole database is dropped at the end
+    of the session, and assertions are scoped by run id.
+    """
+    with Session(engine, expire_on_commit=False) as session:
+        yield session
+
+
+@pytest.fixture
 def session(engine: Engine) -> Iterator[Session]:
     """One test, one transaction, always rolled back — tests never leak rows.
 

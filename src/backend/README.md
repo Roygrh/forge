@@ -2,8 +2,9 @@
 
 Python 3.12 · FastAPI · SQLAlchemy 2 · PostgreSQL 16 + pgvector ([ADR-002](../../docs/adr/002-backend-python-fastapi.md), [ADR-004](../../docs/adr/004-postgres-single-store.md))
 
-**Phase 3.1 scope:** project skeleton, schema, and a health check. No agent runtime, no
-LLM calls, no endpoints beyond `GET /api/v1/health`.
+**Phase 3.2 scope:** the walking skeleton end to end — the agent runtime loop, the LLM
+gateway, the tool gateway, and the run endpoints. No business rules, no knowledge
+retrieval, no HITL approvals, and no eval runner yet; those are Phase 4.
 
 ## Quickstart (three commands)
 
@@ -12,14 +13,33 @@ From the repository root:
 ```bash
 cd deploy && docker compose up -d --build        # 1. Postgres + API
 docker compose exec api alembic upgrade head     # 2. schema
-docker compose exec api python -m scripts.seed   # 3. Meridian tenant
+docker compose exec api python -m scripts.seed   # 3. tenant + skeleton agent
 ```
 
-Then:
+Then run the skeleton agent and read its trace:
 
 ```bash
 curl http://localhost:8000/api/v1/health         # {"status":"ok","db":"ok"}
+
+AGENT=$(docker compose exec -T db psql -U forge -d forge -tA \
+  -c "select id from agents where slug='skeleton-echo'")
+
+RUN=$(curl -s -X POST http://localhost:8000/api/v1/runs \
+  -H 'Content-Type: application/json' -H 'X-Forge-Role: configurator' \
+  -d "{\"agent_id\":\"$AGENT\",\"version\":\"1.0.0\",\"input\":{\"topic\":\"governance\"}}" \
+  | python -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+
+curl -s "http://localhost:8000/api/v1/runs/$RUN/trace" -H 'X-Forge-Role: configurator'
 ```
+
+The run completes with no API key and no network: the seeded agent's DNA names the
+deterministic in-process provider (ADR-005). Point its `model` block at
+`{"provider": "anthropic", "model_id": "claude-haiku-4-5"}` and set `ANTHROPIC_API_KEY`
+to run the same agent against a real model — that swap is the only change needed.
+
+**On Windows, serve the API through compose rather than `uvicorn` directly.** uvicorn
+installs its own event loop policy on Windows, which psycopg's async driver rejects; the
+container is Linux, so the documented path is unaffected. The test suite runs natively.
 
 Interactive docs: <http://localhost:8000/api/v1/docs>.
 
@@ -55,13 +75,18 @@ Lint, format, and types:
 
 | Path | Purpose |
 |---|---|
-| `app/config.py` | Settings from the environment; `DATABASE_URL` is the only required value |
+| `app/config.py` | Settings from the environment; `DATABASE_URL` required, `ANTHROPIC_API_KEY` optional |
 | `app/db.py` | Async engine for the API, sync engine for migrations/scripts/tests |
-| `app/main.py` | FastAPI app; `GET /api/v1/health` with a real `SELECT 1` |
+| `app/main.py` | FastAPI app; health probe and the run router |
 | `app/models/` | The thirteen tables of [`data-model.md`](../../docs/02-architecture/data-model.md) as plain mappings |
+| `app/dna/` | The DNA contract: vendored JSON Schema (write-time) + typed Pydantic view (read-time) |
+| `app/llm/` | The LLM gateway ([ADR-005](../../docs/adr/005-llm-adapter-layer.md)): one `complete()` contract, budget enforcement, three adapters |
+| `app/tools/` | The tool registry and gateway — the only path from an agent to a tool (FR-C1) |
+| `app/runtime/` | The loop ([ADR-003](../../docs/adr/003-custom-agent-runtime.md)), structured-output validation ([ADR-006](../../docs/adr/006-structured-outputs.md)), and the trace writer/reader |
+| `app/api/` | Run endpoints, the error shape, and the gateway dependencies |
 | `alembic/` | Migration environment; the URL comes from settings, never from `alembic.ini` |
-| `scripts/seed.py` | Idempotent Meridian Supply Co. tenant seed |
-| `tests/` | Health, model round-trip, and the ADR-008 append-only guarantee |
+| `scripts/seed.py` | Idempotent tenant + published skeleton agent seed |
+| `tests/` | Health, models, append-only, DNA contract, both gateways, output validation, and the runtime end to end |
 
 ## Notes for reviewers
 
@@ -80,3 +105,30 @@ Lint, format, and types:
   dialect, so migrations and the API cannot drift onto different databases.
 - **Windows dev machines**: `app/main.py` selects the selector event loop, which
   psycopg's async driver requires. A no-op on the Linux container ([ADR-009](../../docs/adr/009-docker-compose-deployment.md)).
+  It covers the test suite but *not* `uvicorn` on Windows — uvicorn installs its own
+  policy after import. Serve through compose there.
+- **The trace is a projection of events, not of the state tables.**
+  `GET /runs/{id}/trace` reads `events` alone and derives the ordered steps from it, so
+  "the screen shows exactly what happened" is true by construction ([ADR-008](../../docs/adr/008-append-only-audit.md)).
+  The response carries the raw events too, so the projection can be checked against its
+  source. `run_steps` and `tool_invocations` remain the queryable current-state tables,
+  written in the same transaction as their event.
+- **Every refusal is recorded.** A tool call that is blocked or denied still writes a
+  `tool_invocations` row and a `tool.called` event: a reviewer must be able to see what
+  the agent *tried* to do, not only what it was allowed to do (FR-C5).
+- **The runtime refuses DNA it cannot honestly execute.** A definition declaring
+  instruction blocks or knowledge collections is valid, but this build cannot resolve
+  either — running it anyway would silently execute a less-informed agent than the one
+  published, so the run escalates with `unsupported_definition` instead.
+- **Three LLM adapters, one contract.** `FakeAdapter` replays a script (tests),
+  `SkeletonDemoAdapter` derives the skeleton's two turns from the request (so a fresh
+  stack demos without a key), and `AnthropicAdapter` makes real calls. The runtime
+  cannot tell which one answered it — that is [ADR-005](../../docs/adr/005-llm-adapter-layer.md)'s
+  claim, made testable.
+- **The vendored `app/dna/dna-schema.json` is byte-identical to the docs original.**
+  The image build context is `src/backend` and cannot reach `docs/`, so the schema is
+  vendored; `tests/test_dna_schema.py` fails if the two ever diverge.
+- **Publishing in the seed bypasses the eval gate, once and visibly.** The seeded
+  version is published with `published_eval_run_id` left null, so a reviewer can tell a
+  seeded version from one that earned its publish. The real gate (409 unless the suite
+  passed, FR-F2) arrives with the eval runner in Phase 4.4.
