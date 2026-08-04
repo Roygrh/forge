@@ -1,8 +1,8 @@
 # Forge reference deployment (ADR-009).
 #
-# `docker compose up` from this directory brings up the whole backend stack:
-# PostgreSQL 16 with pgvector, plus the FastAPI service. The same images serve
-# the local, evaluator, and public-demo environments — only env values differ.
+# `docker compose up` from this directory brings up the whole stack: PostgreSQL 16
+# with pgvector, the FastAPI service, and the React SPA. The same images serve the
+# local, evaluator, and public-demo environments — only env values differ.
 #
 # Credentials here are demo-grade on purpose and committed deliberately
 # (ADR-009: "secrets management is env-file grade ... the first hardening item").
@@ -35,7 +35,8 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # FastAPI backend. Phase 3.1 serves only GET /api/v1/health.
+  # FastAPI backend: health, the read-only agent catalog, and the run surface
+  # (start a run, read its status, read its trace).
   api:
     build:
       context: ../src/backend
@@ -43,11 +44,34 @@ services:
     environment:
       # Driver is pinned to psycopg 3; see app/config.py.
       DATABASE_URL: postgresql+psycopg://forge:forge@db:5432/forge
+      # The browser loads the SPA from :5173 and calls the API on :8000 — a different
+      # origin, so it must be allowed explicitly. Stated here rather than left to the
+      # default in app/config.py so the coupling between these two services is visible
+      # in the file that defines them both.
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  # React SPA (ADR-007) — the agent catalog and the run trace viewer.
+  web:
+    build:
+      context: ../src/frontend
+      dockerfile: Dockerfile
+    environment:
+      # As the *browser* sees the API, never as this container sees it: the SPA runs on
+      # the user's machine, so `http://api:8000` would resolve to nothing there.
+      VITE_API_BASE_URL: http://localhost:8000
+      VITE_FORGE_ROLE: configurator
+    ports:
+      - "5173:5173"
+    depends_on:
+      # Ordering only. The SPA renders and reports the failure itself if the API is not
+      # up yet, which is a better first screen than a container that refuses to start.
+      - api
     restart: unless-stopped
 
 volumes:

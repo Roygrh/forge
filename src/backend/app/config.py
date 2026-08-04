@@ -9,9 +9,10 @@ credential exists (ADR-005), and nothing in the platform runs without it.
 """
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Local default: the compose database published on the host (see deploy/docker-compose.yml).
 DEFAULT_DATABASE_URL = "postgresql+psycopg://forge:forge@localhost:5432/forge"
@@ -30,6 +31,28 @@ class Settings(BaseSettings):
     # never in a DNA document, a tool, or the frontend. Absent by default — the demo
     # and the whole test suite run on the deterministic fake adapter.
     anthropic_api_key: str | None = None
+
+    # The SPA (ADR-007) is served from its own origin — Vite's dev server locally, a
+    # separate container in compose (ADR-009) — so the browser needs these allowed
+    # explicitly. Defaults cover the documented dev ports and nothing else: a wildcard
+    # would be one fewer line and a worse answer.
+    #
+    # ``NoDecode`` turns off pydantic-settings' own JSON decoding for this field, which
+    # would otherwise demand ``["http://a","http://b"]`` in the environment — a poor
+    # thing to write in a compose file, and a parse error before any validator of ours
+    # gets a look at it. The comma-separated form below is parsed instead.
+    cors_origins: Annotated[list[str], NoDecode] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _split_origins(cls, value: object) -> object:
+        """Accept ``CORS_ORIGINS`` as a comma-separated list of origins."""
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
 
     @field_validator("database_url")
     @classmethod

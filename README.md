@@ -21,6 +21,7 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 - **`docs/02-architecture/`** — the C4 model, the behavioral diagrams, the data model, the **agent DNA contract** (`dna-schema.json`), and the API contract (`openapi.yaml`).
 - **`docs/adr/`** — the architecture decision records: each significant choice with its context, alternatives, and trade-offs.
 - **`src/backend/`** — the platform itself (Python 3.12 · FastAPI · SQLAlchemy · PostgreSQL 16 + pgvector). See its own README for how to run it.
+- **`src/frontend/`** — the operations SPA (React 18 · Vite · TypeScript · Tailwind): the agent catalog and the run trace viewer.
 
 ## Status
 
@@ -29,11 +30,13 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 | 0 | Planning & charter | ✅ Complete |
 | 1 | Discovery & requirements | ✅ Complete |
 | 2 | Architecture & contracts | ✅ Complete |
-| 3 | Walking skeleton (running platform foundation) | 🔄 In progress |
+| 3 | Walking skeleton (running platform foundation) | ✅ Complete |
 | 4 | Capabilities (agents, governance, knowledge, HITL, evals, observability) | ⬜ Planned |
 | 5 | Deployment | ⬜ Planned |
 | 6 | Demo packaging | ⬜ Planned |
 
-**The walking skeleton runs end to end today.** `docker compose up` brings up PostgreSQL and the API; a seeded agent — a declarative DNA document, validated against `dna-schema.json` — is loaded by the runtime, which calls a model through the LLM gateway under the budgets its DNA declares, invokes a tool through the tool gateway after checking the autonomy its DNA grants, and reaches a decision that cites a rule ID. Every model call, tool call, decision, and refusal is appended to the audit log, and `GET /runs/{id}/trace` reconstructs the whole run from those events alone. It does this with no API key and no network: the provider is a line in the DNA, and swapping it is the only change needed to run the same agent against a real model.
+**The walking skeleton runs end to end today, in a browser.** `docker compose up` brings up PostgreSQL, the API, and the web app; a seeded agent — a declarative DNA document, validated against `dna-schema.json` — is loaded by the runtime, which calls a model through the LLM gateway under the budgets its DNA declares, invokes a tool through the tool gateway after checking the autonomy its DNA grants, and reaches a decision that cites a rule ID. Every model call, tool call, decision, and refusal is appended to the audit log, and `GET /runs/{id}/trace` reconstructs the whole run from those events alone. It does this with no API key and no network: the provider is a line in the DNA, and swapping it is the only change needed to run the same agent against a real model.
 
-The business rules, knowledge retrieval, human approvals, and the eval gate are Phase 4 — the skeleton is deliberately trivial so that what it demonstrates is the *governance path*, not the agent. See `src/backend/README.md` for the three-command quickstart and a runnable trace.
+At <http://localhost:5173> that is one click. The catalog shows each agent's model, the tools its DNA grants and at what autonomy, and its guardrails; pressing **Run** starts a run and opens its trace — the ordered steps, the gateway's verdict on each tool call, and the final decision with the rule it cited. Underneath sits the append-only event log the timeline was projected from, so the screen can be checked against its source rather than trusted.
+
+The business rules, knowledge retrieval, human approvals, and the eval gate are Phase 4 — the skeleton is deliberately trivial so that what it demonstrates is the *governance path*, not the agent. See `src/backend/README.md` for the three-command quickstart, and `src/frontend/README.md` for the UI.

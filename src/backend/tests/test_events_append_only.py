@@ -5,6 +5,8 @@ that the guarantee is enforced by the database — both layers the initial migra
 installs — rather than by convention in application code.
 """
 
+import uuid
+
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DatabaseError
@@ -15,9 +17,20 @@ from app.models import Event, Tenant
 APP_ROLE = "forge_app"
 
 
+def _survives(session: Session, event_id: int) -> bool:
+    """Whether that exact event is still on disk.
+
+    Scoped to one id rather than counting the whole table: an event cannot be deleted
+    (that is what is under test here), so any module that committed one earlier in the
+    session leaves it behind, and a table-wide count would be asserting something about
+    test ordering rather than about immutability.
+    """
+    return session.scalar(select(func.count()).where(Event.event_id == event_id)) == 1
+
+
 def _one_committed_event(session: Session) -> int:
     """Insert a tenant and one event, commit, and return the event id."""
-    tenant = Tenant(slug="meridian-supply-co", name="Meridian Supply Co.")
+    tenant = Tenant(slug=f"append-only-probe-{uuid.uuid4().hex[:8]}", name="Append-only probe")
     session.add(tenant)
     session.flush()
 
@@ -55,18 +68,18 @@ def test_delete_on_events_is_rejected(session: Session) -> None:
     assert "append-only" in str(raised.value)
 
     session.rollback()
-    assert session.scalar(select(func.count()).select_from(Event)) == 1
+    assert _survives(session, event_id)
 
 
 def test_truncate_on_events_is_rejected(session: Session) -> None:
-    _one_committed_event(session)
+    event_id = _one_committed_event(session)
 
     with pytest.raises(DatabaseError) as raised:
         session.execute(text("TRUNCATE TABLE events"))
     assert "append-only" in str(raised.value)
 
     session.rollback()
-    assert session.scalar(select(func.count()).select_from(Event)) == 1
+    assert _survives(session, event_id)
 
 
 def test_application_role_holds_insert_and_select_only(session: Session) -> None:

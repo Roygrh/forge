@@ -1,4 +1,4 @@
-"""Request and response bodies for the run endpoints.
+"""Request and response bodies for the agent and run endpoints.
 
 Shapes follow ``docs/02-architecture/api/openapi.yaml`` — that contract is the source of
 truth, and these models are its executable form (golden rule 5).
@@ -11,10 +11,73 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models import Run
+from app.models import Agent, AgentVersion, Run
 from app.runtime.trace import TraceEvent, TraceStep
 
 RunStatus = Literal["running", "awaiting_approval", "completed", "escalated", "canceled", "error"]
+AgentType = Literal["chatbot", "workflow", "autonomous"]
+VersionStatus = Literal["draft", "published", "suspended"]
+
+
+class AgentResponse(BaseModel):
+    """One agent identity in the catalog. Behaviour lives in its versions, never here."""
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    slug: str
+    name: str
+    type: AgentType
+    description: str | None = None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, agent: Agent) -> "AgentResponse":
+        """Project an agent row onto the API contract."""
+        return cls(
+            id=agent.id,
+            tenant_id=agent.tenant_id,
+            slug=agent.slug,
+            name=agent.name,
+            type=agent.type,  # type: ignore[arg-type]  # DB text; the enum is the contract
+            description=agent.description,
+            created_at=agent.created_at,
+        )
+
+
+class AgentVersionResponse(BaseModel):
+    """One immutable agent version, DNA included.
+
+    The whole DNA document ships: it is the contract the runtime executed, so a viewer
+    that wants to know what a version was *allowed* to do reads it here rather than
+    inferring it from a run (golden rule 1).
+    """
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    agent_id: uuid.UUID
+    version: str = Field(description="Semver, e.g. 1.0.0")
+    status: VersionStatus
+    dna: dict[str, Any]
+    published_eval_run_id: uuid.UUID | None = Field(
+        default=None, description="The passing eval run that satisfied the publish gate, if any"
+    )
+    published_at: datetime | None = None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, version: AgentVersion) -> "AgentVersionResponse":
+        """Project an agent-version row onto the API contract."""
+        return cls(
+            id=version.id,
+            tenant_id=version.tenant_id,
+            agent_id=version.agent_id,
+            version=version.version,
+            status=version.status,  # type: ignore[arg-type]  # DB text; the enum is the contract
+            dna=version.dna,
+            published_eval_run_id=version.published_eval_run_id,
+            published_at=version.published_at,
+            created_at=version.created_at,
+        )
 
 
 class StartRun(BaseModel):

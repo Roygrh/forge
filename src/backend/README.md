@@ -2,21 +2,23 @@
 
 Python 3.12 · FastAPI · SQLAlchemy 2 · PostgreSQL 16 + pgvector ([ADR-002](../../docs/adr/002-backend-python-fastapi.md), [ADR-004](../../docs/adr/004-postgres-single-store.md))
 
-**Phase 3.2 scope:** the walking skeleton end to end — the agent runtime loop, the LLM
-gateway, the tool gateway, and the run endpoints. No business rules, no knowledge
-retrieval, no HITL approvals, and no eval runner yet; those are Phase 4.
+**Phase 3.2–3.3 scope:** the walking skeleton end to end — the agent runtime loop, the
+LLM gateway, the tool gateway, the run endpoints, and the read-only agent catalog the
+SPA lists. No business rules, no knowledge retrieval, no HITL approvals, and no eval
+runner yet; those are Phase 4.
 
 ## Quickstart (three commands)
 
 From the repository root:
 
 ```bash
-cd deploy && docker compose up -d --build        # 1. Postgres + API
+cd deploy && docker compose up -d --build        # 1. Postgres + API + SPA
 docker compose exec api alembic upgrade head     # 2. schema
 docker compose exec api python -m scripts.seed   # 3. tenant + skeleton agent
 ```
 
-Then run the skeleton agent and read its trace:
+Then open <http://localhost:5173> and press **Run** ([`src/frontend`](../frontend/README.md)) —
+or do the same from a terminal:
 
 ```bash
 curl http://localhost:8000/api/v1/health         # {"status":"ok","db":"ok"}
@@ -77,16 +79,16 @@ Lint, format, and types:
 |---|---|
 | `app/config.py` | Settings from the environment; `DATABASE_URL` required, `ANTHROPIC_API_KEY` optional |
 | `app/db.py` | Async engine for the API, sync engine for migrations/scripts/tests |
-| `app/main.py` | FastAPI app; health probe and the run router |
+| `app/main.py` | FastAPI app; health probe, CORS for the SPA, and the routers |
 | `app/models/` | The thirteen tables of [`data-model.md`](../../docs/02-architecture/data-model.md) as plain mappings |
 | `app/dna/` | The DNA contract: vendored JSON Schema (write-time) + typed Pydantic view (read-time) |
 | `app/llm/` | The LLM gateway ([ADR-005](../../docs/adr/005-llm-adapter-layer.md)): one `complete()` contract, budget enforcement, three adapters |
 | `app/tools/` | The tool registry and gateway — the only path from an agent to a tool (FR-C1) |
 | `app/runtime/` | The loop ([ADR-003](../../docs/adr/003-custom-agent-runtime.md)), structured-output validation ([ADR-006](../../docs/adr/006-structured-outputs.md)), and the trace writer/reader |
-| `app/api/` | Run endpoints, the error shape, and the gateway dependencies |
+| `app/api/` | Agent-catalog and run endpoints, the error shape, and the gateway dependencies |
 | `alembic/` | Migration environment; the URL comes from settings, never from `alembic.ini` |
 | `scripts/seed.py` | Idempotent tenant + published skeleton agent seed |
-| `tests/` | Health, models, append-only, DNA contract, both gateways, output validation, and the runtime end to end |
+| `tests/` | Health, config, models, append-only, DNA contract, both gateways, output validation, the agent catalog, and the runtime end to end |
 
 ## Notes for reviewers
 
@@ -128,6 +130,22 @@ Lint, format, and types:
 - **The vendored `app/dna/dna-schema.json` is byte-identical to the docs original.**
   The image build context is `src/backend` and cannot reach `docs/`, so the schema is
   vendored; `tests/test_dna_schema.py` fails if the two ever diverge.
+- **The agent catalog is read-only, and that is the governance answer.** `GET /agents`
+  and `GET /agents/{id}/versions` exist so the SPA can find something published to run.
+  The write half — create agent, create draft version, publish, suspend — is absent
+  because publishing is eval-gated (FR-F2) and there is no eval runner yet; a publish
+  endpoint that could not enforce its gate would be a hole, not a head start. Both
+  endpoints implement `openapi.yaml` as already written, so no contract changed to add
+  them.
+- **`total_cost_usd` is an exact decimal string on the wire, not a JSON number.** That is
+  what the implementation always did; `openapi.yaml` said `number` and was corrected to
+  match in Phase 3.3 (golden rule 5). Rounding an audit figure through a float is not
+  acceptable, so the SPA formats the string and never parses it.
+- **CORS is explicit, not a wildcard.** The SPA is a separate origin (ADR-007), so the
+  browser preflights every call — `X-Forge-Role` is a non-simple header. `CORS_ORIGINS`
+  defaults to the documented dev ports and is set in the compose file next to the
+  service it is about. Credentials stay off: the role header is a demonstration of
+  segregation of duties, not authentication, and there is no cookie to send.
 - **Publishing in the seed bypasses the eval gate, once and visibly.** The seeded
   version is published with `published_eval_run_id` left null, so a reviewer can tell a
   seeded version from one that earned its publish. The real gate (409 unless the suite

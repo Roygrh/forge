@@ -642,7 +642,13 @@ components:
           enum: [running, awaiting_approval, completed, escalated, canceled, error]
         trigger: { type: string }
         total_tokens: { type: integer }
-        total_cost_usd: { type: number }
+        total_cost_usd:
+          type: [string, 'null']
+          description: >-
+            Exact decimal, serialised as a string. Money is never carried as a
+            JSON number here: an audit figure rounded through a float is not an
+            audit figure. The same convention applies to cost_usd inside a
+            model.called event payload.
         started_at: { type: string, format: date-time }
         finished_at: { type: [string, 'null'], format: date-time }
 

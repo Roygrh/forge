@@ -1,9 +1,10 @@
 """Forge API — application entry point.
 
-Phase 3.2 completes the walking skeleton: the app starts, talks to PostgreSQL, and
-serves the run surface — start a run, read its status, read its trace. The rest of the
-governance surface contracted in ``docs/02-architecture/api/openapi.yaml`` (agents,
-approvals, knowledge, evals) arrives in later phases.
+Phase 3.2 completed the walking skeleton: the app starts, talks to PostgreSQL, and
+serves the run surface — start a run, read its status, read its trace. Phase 3.3 adds
+the read-only agent catalog the SPA lists, and CORS so that SPA can reach the API. The
+rest of the governance surface contracted in ``docs/02-architecture/api/openapi.yaml``
+(agent authoring, approvals, knowledge, evals) arrives in later phases.
 """
 
 import asyncio
@@ -13,10 +14,11 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app import __version__
-from app.api import install_error_handlers, runs_router
+from app.api import agents_router, install_error_handlers, runs_router
 from app.config import get_settings
 from app.db import check_database, get_async_engine
 
@@ -61,6 +63,19 @@ app = FastAPI(
 )
 
 install_error_handlers(app)
+
+# The SPA runs on its own origin, so every one of its calls is cross-origin and every
+# one of them carries X-Forge-Role — a non-simple header, which means the browser
+# preflights it. Credentials stay off: the role header is a demonstration of
+# segregation of duties (NFR-5), not authentication, and there is no cookie to send.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-Forge-Role"],
+)
+
+app.include_router(agents_router, prefix=settings.api_prefix)
 app.include_router(runs_router, prefix=settings.api_prefix)
 
 
