@@ -6,10 +6,10 @@ therefore what the SPA depends on: the agent is listed, its published version co
 with the DNA the runtime executes, and a missing agent is a 404 rather than an empty
 list.
 
-The fixture seeds the real skeleton agent (``scripts/seed.py``, the demo's own artifact)
-but under a tenant slug of this module's own, because an API test has to *commit* its
-rows for the app's connection to see them. Borrowing the shared ``meridian-supply-co``
-slug would leave it behind for whichever module runs next.
+The fixture publishes the real invoice-validator definition (``scripts/seed.py``, the
+demo's own artifact) but under a tenant slug of this module's own, because an API test
+has to *commit* its rows for the app's connection to see them. Borrowing the shared
+``meridian-supply-co`` slug would leave it behind for whichever module runs next.
 """
 
 import uuid
@@ -21,8 +21,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.models import AgentVersion, Tenant
-from app.tools.registry import GET_FACT_REF
-from scripts.seed import SKELETON_VERSION, seed_skeleton_agent
+from scripts.seed import seed_agent
 
 AGENTS_URL = "/api/v1/agents"
 HEADERS = {"X-Forge-Role": "viewer"}
@@ -38,12 +37,12 @@ def client(migrated_database: None) -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def skeleton(committed_session: Session) -> AgentVersion:
-    """A published skeleton agent, committed so the app's own connection can see it."""
+def validator(committed_session: Session) -> AgentVersion:
+    """A published invoice validator, committed so the app's connection can see it."""
     tenant = Tenant(slug=f"catalog-test-{uuid.uuid4().hex[:8]}", name="Catalog Test Tenant")
     committed_session.add(tenant)
     committed_session.flush()
-    version, _ = seed_skeleton_agent(committed_session, tenant)
+    version, _ = seed_agent(committed_session, tenant, "invoice-validator")
     committed_session.commit()
     return version
 
@@ -58,26 +57,29 @@ def _listed(client: TestClient, agent_id: uuid.UUID) -> dict[str, Any]:
     return matches[0]
 
 
-def test_lists_the_seeded_agent(client: TestClient, skeleton: AgentVersion) -> None:
-    agent = _listed(client, skeleton.agent_id)
-    assert agent["slug"] == "skeleton-echo"
+def test_lists_the_seeded_agent(client: TestClient, validator: AgentVersion) -> None:
+    agent = _listed(client, validator.agent_id)
+    assert agent["slug"] == "invoice-validator"
     assert agent["type"] == "workflow"
     assert agent["description"]
 
 
 def test_versions_carry_the_dna_the_runtime_executes(
-    client: TestClient, skeleton: AgentVersion
+    client: TestClient, validator: AgentVersion
 ) -> None:
-    response = client.get(f"{AGENTS_URL}/{skeleton.agent_id}/versions", headers=HEADERS)
+    response = client.get(f"{AGENTS_URL}/{validator.agent_id}/versions", headers=HEADERS)
     assert response.status_code == 200, response.text
 
     versions: list[dict[str, Any]] = response.json()
-    published = [item for item in versions if item["version"] == SKELETON_VERSION]
+    published = [item for item in versions if item["version"] == validator.version]
     assert len(published) == 1
     version = published[0]
     assert version["status"] == "published"
-    # The SPA reads the grant list to show what this version was allowed to reach.
-    assert version["dna"]["tools"] == [{"ref": GET_FACT_REF, "autonomy": "autonomous"}]
+    # The SPA reads the grant list to show what this version was allowed to reach — at
+    # what autonomy, which is what makes the catalog card a governance summary.
+    autonomy = {grant["ref"]: grant["autonomy"] for grant in version["dna"]["tools"]}
+    assert autonomy["meridian-erp-read-invoice@1.0.0"] == "autonomous"
+    assert autonomy["meridian-erp-schedule-payment@1.0.0"] == "forbidden"
     # Seeded, so it never passed a gate — and says so (see scripts/seed.py).
     assert version["published_eval_run_id"] is None
 

@@ -71,17 +71,18 @@ export function runStatusMeaning(status: RunStatus): string {
 }
 
 const TOOL_STATUS_TONE: Record<ToolStatus, Tone> = {
-  validated: 'info',
+  validated: 'warn',
   executed: 'good',
   blocked: 'bad',
   denied: 'bad',
 }
 
 const TOOL_STATUS_MEANING: Record<ToolStatus, string> = {
-  validated: 'Arguments passed the tool’s schema.',
+  validated:
+    'Checked and held: this agent’s DNA grants the tool only with a human approval, so the call was validated and parked — it did not run.',
   executed: 'The gateway allowed the call and ran it.',
   blocked: 'The gateway refused: the call never reached the tool.',
-  denied: 'The gateway refused: this version was not granted that tool.',
+  denied: 'The gateway refused: this version explicitly forbids that tool.',
 }
 
 export function ToolStatusPill({ status }: { status: ToolStatus }) {

@@ -163,6 +163,12 @@ export interface DecisionRecord {
   action: DecisionAction
   citations: string[]
   reasoning: string
+  /**
+   * Agent-specific structured result, present only when the agent produced one — the
+   * normalised invoice from intake, for example. Optional in the contract and omitted
+   * rather than nulled, so a decision that adjudicates carries no empty field.
+   */
+  output?: JsonObject
 }
 
 export interface RunStep {

@@ -10,8 +10,13 @@ from sqlalchemy.orm import Session
 from app.models import Agent, Tenant
 
 
-def _tenant(session: Session, slug: str = "meridian-supply-co") -> Tenant:
-    tenant = Tenant(slug=slug, name="Meridian Supply Co.")
+def _tenant(session: Session, slug: str | None = None) -> Tenant:
+    """A tenant of this test's own.
+
+    The slug is unique per call: `tenants.slug` is globally unique, and a module that
+    commits the demonstration tenant would otherwise decide whether this one can run.
+    """
+    tenant = Tenant(slug=slug or f"model-test-{uuid.uuid4().hex[:8]}", name="Meridian Supply Co.")
     session.add(tenant)
     session.flush()
     return tenant

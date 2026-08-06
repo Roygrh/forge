@@ -19,8 +19,34 @@ import { Button, PageHeading } from '../components/Shell'
 import { useAsync } from '../lib/useAsync'
 import { humanize } from '../lib/format'
 
-/** The trigger payload the Run button sends. A topic the seeded tool knows about. */
-const DEMO_INPUT = { topic: 'governance' }
+/**
+ * What the Run button sends, per agent.
+ *
+ * The three accounts-payable agents are triggered with an invoice id from the seeded
+ * MeridianERP. `inv-0001` is eval case E-01 — a trusted vendor, a valid PO, and a 0.8%
+ * price variance — which is the story the demo opens with: a routine invoice that flows
+ * without a human and says exactly which rules let it.
+ *
+ * Anything else falls back to the skeleton agent's payload, so a catalog containing an
+ * older agent still has a working button rather than a broken one.
+ */
+const DEMO_INVOICE_ID = 'inv-0001'
+const FALLBACK_INPUT = { topic: 'governance' }
+
+const DEMO_INPUT_BY_SLUG: Record<string, Record<string, string>> = {
+  'invoice-intake': { invoice_id: DEMO_INVOICE_ID },
+  'invoice-validator': { invoice_id: DEMO_INVOICE_ID },
+  // The comms agent asks the vendor something — and its one tool needs a human, so this
+  // run is expected to stop in `awaiting_approval` rather than complete.
+  'invoice-comms': {
+    invoice_id: 'inv-0005',
+    question: 'Which purchase order covers the price difference on this invoice?',
+  },
+}
+
+function demoInputFor(slug: string): Record<string, string> {
+  return DEMO_INPUT_BY_SLUG[slug] ?? FALLBACK_INPUT
+}
 
 interface CatalogEntry {
   agent: Agent
@@ -45,8 +71,11 @@ export function AgentsScreen({ onRunStarted }: { onRunStarted: (runId: string) =
         lead={
           <>
             Every agent is a versioned, declarative definition — its “DNA”. One runtime executes
-            all of them, and a version may only run once it has been published. Start a run to
-            watch the runtime work and read the trace it leaves behind.
+            all of them, and a version may only run once it has been published. Meridian’s three
+            accounts-payable agents differ only in what their definitions grant them: intake may
+            read an invoice and nothing else, the validator may approve one up to a declared
+            ceiling, and comms may not contact a vendor without a human. Start a run to watch the
+            runtime work and read the trace it leaves behind.
           </>
         }
       />
@@ -56,7 +85,7 @@ export function AgentsScreen({ onRunStarted }: { onRunStarted: (runId: string) =
       {state.status === 'ready' &&
         (state.data.length === 0 ? (
           <Empty title="No agents yet">
-            Seed the demonstration agent with{' '}
+            Seed the demonstration agents with{' '}
             <code className="font-mono text-[12px]">
               docker compose exec api python -m scripts.seed
             </code>
@@ -82,6 +111,7 @@ function AgentCard({
 }) {
   const { agent, versions } = entry
   const runnable = versions.find((version) => version.status === 'published')
+  const input = demoInputFor(agent.slug)
 
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<unknown>(null)
@@ -96,7 +126,7 @@ function AgentCard({
       const run = await api.startRun({
         agent_id: agent.id,
         version: runnable.version,
-        input: DEMO_INPUT,
+        input,
       })
       onRunStarted(run.id)
     } catch (cause) {
@@ -135,8 +165,8 @@ function AgentCard({
           <Button onClick={() => void start()} disabled={runnable === undefined || starting}>
             {starting ? 'Running…' : 'Run'}
           </Button>
-          <span className="text-xs text-slate-400">
-            input <span className="font-mono">{JSON.stringify(DEMO_INPUT)}</span>
+          <span className="max-w-xs text-right text-xs break-all text-slate-400">
+            input <span className="font-mono">{JSON.stringify(input)}</span>
           </span>
         </div>
       </div>

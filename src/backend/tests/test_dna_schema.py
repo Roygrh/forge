@@ -1,4 +1,4 @@
-"""The DNA contract: the vendored schema, and the two views of it agreeing."""
+"""The DNA contract: the vendored artefacts, and the two views of it agreeing."""
 
 import json
 from pathlib import Path
@@ -6,17 +6,13 @@ from typing import Any
 
 import pytest
 
-from app.dna import SCHEMA_PATH, Dna, DnaValidationError, validate_dna
-from scripts.seed import SKELETON_DNA
+from app.dna import AP_AGENT_SLUGS, SCHEMA_PATH, Dna, DnaValidationError, agent_path, validate_dna
+from tests.skeleton import SKELETON_DNA
 
-DOCS_SCHEMA = Path(__file__).resolve().parents[3] / "docs" / "02-architecture" / "dna-schema.json"
-INVOICE_VALIDATOR = (
-    Path(__file__).resolve().parents[3]
-    / "docs"
-    / "02-architecture"
-    / "dna-examples"
-    / "invoice-validator.agent.json"
-)
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ARCHITECTURE = REPO_ROOT / "docs" / "02-architecture"
+DOCS_SCHEMA = ARCHITECTURE / "dna-schema.json"
+DOCS_AGENTS = ARCHITECTURE / "dna-examples"
 
 
 def test_vendored_schema_matches_the_docs_original() -> None:
@@ -28,8 +24,14 @@ def test_vendored_schema_matches_the_docs_original() -> None:
     assert SCHEMA_PATH.read_bytes() == DOCS_SCHEMA.read_bytes()
 
 
+@pytest.mark.parametrize("slug", AP_AGENT_SLUGS)
+def test_vendored_agent_definitions_match_the_docs_originals(slug: str) -> None:
+    """Same arrangement, same guarantee, for the three shipped agent definitions."""
+    assert agent_path(slug).read_bytes() == (DOCS_AGENTS / f"{slug}.agent.json").read_bytes()
+
+
 def test_skeleton_dna_is_valid_and_parses() -> None:
-    """The seeded agent satisfies the schema and the runtime's typed read view."""
+    """The runtime's own test fixture satisfies the schema and the typed read view."""
     validate_dna(SKELETON_DNA)
 
     dna = Dna.model_validate(SKELETON_DNA)
@@ -43,24 +45,40 @@ def test_skeleton_dna_is_valid_and_parses() -> None:
     assert dna.guardrails.escalate_on_no_rule_match is True
 
 
-def test_the_shipped_example_validates_and_parses() -> None:
-    """The Phase 2 invoice-validator example is admitted by both views.
-
-    It is the richest DNA the repo contains — every autonomy level, real knowledge
-    collections, a full rule-citing prompt — so it is what proves the Pydantic mirror
-    covers the schema and not just the skeleton's corner of it.
-    """
-    document = json.loads(INVOICE_VALIDATOR.read_text(encoding="utf-8"))
+@pytest.mark.parametrize("slug", AP_AGENT_SLUGS)
+def test_every_shipped_agent_validates_and_parses(slug: str) -> None:
+    """A definition the platform ships is one both views admit — no exceptions."""
+    document = json.loads((DOCS_AGENTS / f"{slug}.agent.json").read_text(encoding="utf-8"))
 
     validate_dna(document)
     dna = Dna.model_validate(document)
 
-    assert dna.identity.slug == "invoice-validator"
-    assert {grant.autonomy for grant in dna.tools} == {
-        "autonomous",
-        "requires_approval",
-        "forbidden",
-    }
+    assert dna.identity.slug == slug
+    assert dna.identity.tenant_id == "meridian-supply-co"
+    assert dna.guardrails.require_citations is True
+
+
+def test_the_validator_declares_all_three_autonomy_levels() -> None:
+    """The richest definition in the repo: least privilege stated at every level.
+
+    Reads are autonomous, the vendor contact needs a human, and payment scheduling is
+    explicitly forbidden — recorded as a refusal so a reviewer can see it was
+    considered rather than merely omitted (FR-C3).
+    """
+    dna = Dna.model_validate(
+        json.loads((DOCS_AGENTS / "invoice-validator.agent.json").read_text(encoding="utf-8"))
+    )
+
+    autonomy = {grant.ref: grant.autonomy for grant in dna.tools}
+
+    assert autonomy["meridian-erp-read-invoice@1.0.0"] == "autonomous"
+    assert autonomy["meridian-ap-rules-query@1.0.0"] == "autonomous"
+    assert autonomy["meridian-erp-request-info-from-vendor@1.0.0"] == "requires_approval"
+    assert autonomy["meridian-erp-schedule-payment@1.0.0"] == "forbidden"
+    # The spend ceiling is declared in the definition, not hidden in a prompt.
+    approve = dna.grant_for("meridian-erp-approve-invoice@1.0.0")
+    assert approve is not None
+    assert approve.config == {"max_amount_usd": 10000}
 
 
 def test_fail_closed_guardrails_cannot_be_disabled() -> None:

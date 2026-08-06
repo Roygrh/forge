@@ -2,9 +2,11 @@
 
 React 18 · Vite · TypeScript (strict) · Tailwind ([ADR-007](../../docs/adr/007-frontend-react-vite.md))
 
-**Phase 3.3 scope:** the two screens that close the walking skeleton — the agent catalog,
-and the run trace viewer. Agent authoring, the approval queue, knowledge and eval screens
-are Phase 4 and are deliberately absent: there is nothing behind them yet, and a screen
+**Scope:** two screens — the agent catalog, and the run trace viewer. Phase 4.1 fills
+them with the real accounts-payable agents: the catalog now shows what each agent's DNA
+grants it and at what autonomy, and the trace reads a validator decision as an action
+plus the rules it cited. Agent authoring, the approval queue, and the knowledge and eval
+screens are still deliberately absent — there is nothing behind them yet, and a screen
 that cannot enforce what it displays is worse than no screen.
 
 ## Run it
@@ -15,11 +17,22 @@ The SPA is useless without the API, so start the backend first
 ```bash
 cd deploy && docker compose up -d --build      # Postgres + API + this SPA
 docker compose exec api alembic upgrade head   # schema
-docker compose exec api python -m scripts.seed # tenant + skeleton agent
+docker compose exec api python -m scripts.seed # tenant + rules + three agents
 ```
 
 Then open <http://localhost:5173>. That is all — the `web` service in the compose file
 runs this app.
+
+Press **Run** on the Invoice Validator to watch a real invoice reach a rule-cited
+decision. Each agent's button sends the input that shows what its definition permits: the
+validator auto-approves `inv-0001` (E-01) citing R-001 and R-010; intake normalises the
+same invoice and can do nothing else; comms drafts a vendor question and stops in
+`awaiting_approval`, because its one tool is granted only with a human in the loop.
+
+Running the validator on the *same* invoice twice escalates the second time: the
+simulated ERP has already approved it and will not approve it again. That is deliberate —
+duplicate payments are what Meridian is trying to stop — and the trace says so in words.
+`docker compose restart api` rewinds the simulated ERP.
 
 To work on the SPA itself, run it from source against the same API:
 

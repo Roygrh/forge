@@ -2,15 +2,15 @@
 
 from app.llm.adapters.anthropic import AnthropicAdapter
 from app.llm.adapters.base import LlmAdapter
-from app.llm.adapters.demo import SkeletonDemoAdapter
+from app.llm.adapters.demo import MeridianDemoAdapter
 from app.llm.adapters.fake import FakeAdapter, ScriptedTurn, decision_turn, raw_turn, tool_turn
 
 __all__ = [
     "AnthropicAdapter",
     "FakeAdapter",
     "LlmAdapter",
+    "MeridianDemoAdapter",
     "ScriptedTurn",
-    "SkeletonDemoAdapter",
     "decision_turn",
     "raw_turn",
     "tool_turn",

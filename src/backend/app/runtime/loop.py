@@ -117,7 +117,7 @@ class AgentRuntime:
             decision = await self._reason(recorder, dna, run_input, budget)
         except FailClosedError as exc:
             return await recorder.finish(
-                status="escalated", budget=budget, reason=exc.reason, detail=exc.detail
+                status=exc.run_status, budget=budget, reason=exc.reason, detail=exc.detail
             )
         except Exception as exc:
             await recorder.finish(status="error", budget=budget, detail=repr(exc))
@@ -178,6 +178,17 @@ class AgentRuntime:
             outcome = self._tools.invoke(name=output.name, arguments=output.arguments, dna=dna)
             # Recorded whether or not it ran: a reviewer must see what was attempted.
             await recorder.record_tool_call(outcome)
+            if outcome.pending_approval:
+                # The DNA grants this tool only with a human in the loop. The call is
+                # validated and parked; the run stops here rather than deciding without
+                # the action it asked for, or executing it anyway (FR-E2).
+                raise FailClosedError(
+                    EscalationReason.APPROVAL_REQUIRED,
+                    f"tool {outcome.tool_name!r} requires human approval "
+                    f"(autonomy={outcome.autonomy}); the call is validated and parked, "
+                    "and nothing was executed",
+                    run_status="awaiting_approval",
+                )
             if not outcome.executed:
                 raise FailClosedError(
                     EscalationReason.TOOL_REFUSED,

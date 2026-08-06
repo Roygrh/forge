@@ -11,6 +11,7 @@ multi-tenant-ready while a single tenant is active. Agent DNA lives as validated
 erDiagram
     tenants ||--o{ agents : owns
     tenants ||--o{ knowledge_collections : owns
+    tenants ||--o{ rules : owns
     tenants ||--o{ eval_suites : owns
     agents ||--o{ agent_versions : versions
     agent_versions ||--o{ runs : executes
@@ -104,6 +105,20 @@ erDiagram
         text owner
         timestamptz created_at
     }
+    rules {
+        uuid id PK
+        uuid tenant_id FK
+        text rule_id "R-xxx, cited in decisions"
+        text family "vendor_trust | matching | thresholds | ..."
+        text kind "business | definition | meta"
+        text statement "verbatim from the owning document"
+        text authority_level "same scale as knowledge_chunks"
+        text version "semver of the rule set"
+        jsonb clauses "ordered when/action pairs, first match wins"
+        jsonb cites "rule ids cited alongside this one"
+        text source_ref "owning document and anchor"
+        timestamptz created_at
+    }
     knowledge_chunks {
         uuid id PK
         uuid tenant_id FK
@@ -189,6 +204,26 @@ migration. `jsonb` also lets us index into the document (e.g. `dna->'model'->>'p
 without pretending the relational schema owns the shape. The tradeoff is that structural
 guarantees come from application-side validation plus a `CHECK`, not from column types —
 acceptable because the schema is the deliberate single source of structure.
+
+**Rules are rows, not code.** The captured tacit rules
+([`04-tacit-rules.md`](../01-discovery/04-tacit-rules.md)) live in `rules`: each carries
+its citable `rule_id`, the `statement` its owner signed off, an `authority_level`, and
+`clauses` — an ordered list of machine-evaluable `when`/`action` pairs, first match wins.
+The invoice-validator agent contains none of them; it retrieves them through the tool
+gateway and reasons over what it retrieved, citing the ids it applied (R-092). Because
+the rule set is read from this table on every run, **changing a rule is an `UPDATE`** —
+no code change, no rebuild, no redeploy. `clauses` is `jsonb` for the same reason DNA is:
+the condition grammar is owned by a schema (`app/rules/model.py`), and shredding a
+condition tree into columns would fork that definition. This is the *structured* half of
+the knowledge layer — exact lookups and evaluable thresholds; `knowledge_chunks` below is
+the semantic half, and both carry `authority_level` on the same scale so a rule and a
+policy document can be ranked against each other (FR-D2, R-090).
+
+Meridian's own data — vendors, purchase orders, goods receipts, invoices — is
+deliberately **absent** from this schema. MeridianERP is an external system in the C4
+model; a vendor master is the client's state, not the platform's. It is simulated in
+`app/erp/` with its own storage, so the boundary the architecture claims is a boundary
+the code actually has.
 
 **Knowledge: authority + hybrid search.** Each `knowledge_chunk` carries an
 `authority_level` (denormalized from its collection so ranking is a local read) plus both

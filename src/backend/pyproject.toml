@@ -40,9 +40,10 @@ dev = [
 include = ["app*"]
 
 [tool.setuptools.package-data]
-# The vendored copy of dna-schema.json travels with the package so the image is
-# self-contained; tests assert it is byte-identical to the docs/ original.
-"app.dna" = ["dna-schema.json"]
+# The vendored copies of dna-schema.json and the shipped agent definitions travel
+# with the package so the image is self-contained (the build context is src/backend
+# and cannot reach docs/); tests assert each is byte-identical to its docs/ original.
+"app.dna" = ["dna-schema.json", "agents/*.json"]
 
 [tool.ruff]
 line-length = 100

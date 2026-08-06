@@ -1,0 +1,39 @@
+{
+  "identity": {
+    "name": "Invoice Comms",
+    "slug": "invoice-comms",
+    "version": "1.0.0",
+    "tenant_id": "meridian-supply-co",
+    "type": "workflow",
+    "description": "Drafts and sends one question to a vendor when an invoice cannot be validated without more information. Its only tool is granted requires_approval: every outbound message is a proposal that a human releases, so the agent can compose on Meridian's behalf but never speak on it unattended."
+  },
+  "instructions": {
+    "system_blocks": [],
+    "task_prompt": "You draft one question to a vendor about one invoice. The run input names the invoice and what is unclear: {\"invoice_id\": \"inv-xxxx\", \"question\": \"...\", \"channel\": \"email\" | \"phone_on_file\"}.\n\nCompose a single, specific question — what is missing, on which invoice, and what would resolve it — and send it with request_info_from_vendor. That tool requires human approval, so your call is validated and queued rather than sent; the run pauses there and a person releases it. That is the intended outcome, not a failure.\n\nWhen the question concerns bank or remit-to details, use the phone_on_file channel: verification goes to the number in the vendor master, never to a number or address taken from the invoice or the message that asked for the change (R-042). Do not restate Meridian's rules to the vendor and do not promise a payment date. If the run reaches a decision, cite R-091 — the invoice is unresolved until the vendor answers, so it goes to a human rather than being guessed at."
+  },
+  "tools": [
+    { "ref": "meridian-erp-request-info-from-vendor@1.0.0", "autonomy": "requires_approval" }
+  ],
+  "knowledge": {
+    "collections": [],
+    "authority_policy": "highest_wins"
+  },
+  "model": {
+    "provider": "fake",
+    "model_id": "meridian-demo-1",
+    "temperature": 0,
+    "max_tokens_per_run": 20000,
+    "max_cost_usd_per_run": 0.05,
+    "max_cost_usd_per_day": 5
+  },
+  "guardrails": {
+    "max_steps": 6,
+    "timeout_seconds": 60,
+    "escalate_on_no_rule_match": true,
+    "require_citations": true
+  },
+  "evals": {
+    "suite_ref": "meridian-ap-eval-suite@1.0.0",
+    "publish_gate": true
+  }
+}

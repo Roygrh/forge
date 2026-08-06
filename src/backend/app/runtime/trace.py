@@ -47,6 +47,7 @@ EVENT_TOOL_CALLED = "tool.called"
 EVENT_DECISION_MADE = "decision.made"
 EVENT_RUN_COMPLETED = "run.completed"
 EVENT_RUN_ESCALATED = "run.escalated"
+EVENT_RUN_AWAITING_APPROVAL = "run.awaiting_approval"
 EVENT_RUN_FAILED = "run.failed"
 
 #: Terminal run status -> the event that records it. The mapping is total: there is no
@@ -54,6 +55,9 @@ EVENT_RUN_FAILED = "run.failed"
 _TERMINAL_EVENT_FOR_STATUS = {
     "completed": EVENT_RUN_COMPLETED,
     "escalated": EVENT_RUN_ESCALATED,
+    # Terminal *for this phase*: the run stops and nothing executed. Phase 4.4 makes it
+    # resumable by creating the approval row this event already describes.
+    "awaiting_approval": EVENT_RUN_AWAITING_APPROVAL,
     "error": EVENT_RUN_FAILED,
 }
 

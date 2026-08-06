@@ -6,8 +6,20 @@ An agent in Forge is not code. It is one JSON document — its **DNA** — valid
 [`dna-schema.json`](./dna-schema.json) (JSON Schema draft 2020-12). The DNA declares
 everything the agent is and may do: identity and version, instructions, tool grants
 with autonomy levels, knowledge collections, model and budgets, guardrails, and its
-evaluation suite. See [`dna-examples/invoice-validator.agent.json`](./dna-examples/invoice-validator.agent.json)
-for a complete example.
+evaluation suite. See [`dna-examples/`](./dna-examples/) for the three shipped Meridian
+agents — [`invoice-intake`](./dna-examples/invoice-intake.agent.json),
+[`invoice-validator`](./dna-examples/invoice-validator.agent.json), and
+[`invoice-comms`](./dna-examples/invoice-comms.agent.json). They are the same document
+in three degrees of authority, which is the clearest reading of what this contract buys:
+intake is granted one read-only tool, the validator may approve up to a ceiling declared
+in its grant and is explicitly *forbidden* to schedule payments, and comms may contact a
+vendor only through a human approval. Nothing but the documents differs — one runtime
+executes all three.
+
+> `knowledge.collections` is empty in all three until Phase 4.3: the runtime refuses to
+> run a definition whose collections it cannot resolve, rather than silently executing a
+> less-informed agent than the one published. Governed rules reach the validator through
+> the `query_rules` tool grant in the meantime.
 
 ## Contract philosophy
 

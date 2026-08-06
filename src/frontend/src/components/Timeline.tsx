@@ -142,6 +142,7 @@ function ReasonStep({ call }: { call: ModelCall }) {
 
 function ToolStep({ invocation }: { invocation: ToolInvocation }) {
   const refused = invocation.status === 'blocked' || invocation.status === 'denied'
+  const parked = invocation.status === 'validated'
 
   return (
     <div className="space-y-3">
@@ -158,7 +159,11 @@ function ToolStep({ invocation }: { invocation: ToolInvocation }) {
       */}
       <div
         className={`rounded-md border px-3.5 py-2.5 text-sm ${
-          refused ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-slate-200 bg-slate-50 text-slate-600'
+          refused
+            ? 'border-rose-200 bg-rose-50 text-rose-800'
+            : parked
+              ? 'border-amber-200 bg-amber-50 text-amber-900'
+              : 'border-slate-200 bg-slate-50 text-slate-600'
         }`}
       >
         <span className="font-medium">Tool gateway:</span> {toolStatusMeaning(invocation.status)}
@@ -175,7 +180,9 @@ function ToolStep({ invocation }: { invocation: ToolInvocation }) {
               Result
             </div>
             <p className="rounded-md border border-dashed border-slate-300 px-3 py-2.5 text-sm text-slate-500">
-              None — the call never ran.
+              {parked
+                ? 'None — the call is waiting on a human approval.'
+                : 'None — the call never ran.'}
             </p>
           </div>
         ) : (
@@ -225,6 +232,15 @@ function DecisionStep({ decision }: { decision: DecisionRecord }) {
         </div>
         <p className="text-sm leading-relaxed text-slate-700">{decision.reasoning}</p>
       </div>
+
+      {/*
+        Only some agents produce one: the intake agent's job is to *structure* an
+        invoice, not to adjudicate it, so its normalised fields are the substance of
+        its decision rather than a footnote to it.
+      */}
+      {decision.output !== undefined && (
+        <JsonBlock label="Structured output" value={decision.output} />
+      )}
 
       <Disclosure summary="Decision as recorded">
         <JsonBlock value={decision} />

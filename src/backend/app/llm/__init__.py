@@ -2,7 +2,7 @@
 
 from app.llm.adapters.anthropic import AnthropicAdapter
 from app.llm.adapters.base import LlmAdapter
-from app.llm.adapters.demo import SkeletonDemoAdapter
+from app.llm.adapters.demo import MeridianDemoAdapter
 from app.llm.adapters.fake import FakeAdapter, ScriptedTurn, decision_turn, raw_turn, tool_turn
 from app.llm.contract import (
     AdapterError,
@@ -29,10 +29,10 @@ __all__ = [
     "LlmAdapter",
     "LlmGateway",
     "LlmGatewayError",
+    "MeridianDemoAdapter",
     "Message",
     "ModelSpec",
     "ScriptedTurn",
-    "SkeletonDemoAdapter",
     "ToolCall",
     "ToolSpec",
     "UnknownProviderError",

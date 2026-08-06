@@ -5,29 +5,32 @@ Every test drives the loop the way the demo does — ``POST /runs`` — with a s
 into the runtime directly, so what is asserted is what a reviewer (or the SPA) would
 see: a run status, and a trace projected from the append-only event log.
 
+The agent under test is the **skeleton** (``tests/skeleton.py``): one tool, one decision,
+no business domain. That is deliberate — these tests are about the loop, the budgets, and
+the fail-closed paths, and a failure should say which of those broke rather than which
+invoice rule fired. The accounts-payable agents are exercised in ``test_ap_agents.py``.
+
 No network, and a fixed script per test, so a run is byte-for-byte reproducible.
 """
 
-import json
 import uuid
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.dna import validate_dna
 from app.llm import FakeAdapter, LlmGateway, ScriptedTurn, decision_turn, raw_turn, tool_turn
-from app.models import Agent, AgentVersion, Event, Tenant
-from scripts.seed import SKELETON_DNA, SKELETON_VERSION, seed_skeleton_agent, seed_tenant
+from app.models import AgentVersion, Tenant
+from scripts.seed import seed_tenant
+from tests.skeleton import publish_skeleton
 
 RUNS_URL = "/api/v1/runs"
 HEADERS = {"X-Forge-Role": "configurator"}
 
-# The happy-path script the seeded skeleton agent is written for: look the fact up,
-# then decide with a citation.
+# The happy-path script the skeleton agent is written for: look the fact up, then decide
+# with a citation.
 LOOK_UP_FORGE = tool_turn("get_fact", {"topic": "forge"})
 APPROVE = decision_turn("auto_approve", ["R-000"], "The governed fact was retrieved.")
 
@@ -69,61 +72,8 @@ def tenant(committed_session: Session) -> Tenant:
 
 @pytest.fixture
 def skeleton(committed_session: Session, tenant: Tenant) -> AgentVersion:
-    """The published agent the seed script installs — the demo's own artifact."""
-    version, _ = seed_skeleton_agent(committed_session, tenant)
-    committed_session.commit()
-    return version
-
-
-def publish_variant(
-    session: Session,
-    tenant: Tenant,
-    slug: str,
-    mutate: Callable[[dict[str, Any]], None],
-    *,
-    status: str = "published",
-) -> AgentVersion:
-    """Publish a variant of the skeleton DNA, still valid against the schema.
-
-    Variants exist so a test can move one guardrail (a budget, a step limit) without
-    inventing a whole agent — and ``validate_dna`` keeps them honest definitions rather
-    than convenient fixtures.
-    """
-    document: dict[str, Any] = json.loads(json.dumps(SKELETON_DNA))
-    document["identity"]["slug"] = slug
-    mutate(document)
-    validate_dna(document)
-
-    agent = Agent(
-        tenant_id=tenant.tenant_id,
-        slug=slug,
-        name=document["identity"]["name"],
-        type=document["identity"]["type"],
-    )
-    session.add(agent)
-    session.flush()
-
-    version = AgentVersion(
-        tenant_id=tenant.tenant_id,
-        agent_id=agent.id,
-        version=SKELETON_VERSION,
-        dna=document,
-        status=status,
-        published_at=datetime.now(UTC) if status == "published" else None,
-    )
-    session.add(version)
-    session.flush()
-    session.add(
-        Event(
-            tenant_id=tenant.tenant_id,
-            type="version.published",
-            actor="test",
-            agent_version_id=version.id,
-            payload={"agent": f"{slug}@{SKELETON_VERSION}", "gate": "bypassed:test"},
-        )
-    )
-    session.commit()
-    return version
+    """The published skeleton agent, committed so the app's connection can see it."""
+    return publish_skeleton(committed_session, tenant)
 
 
 def start_run(client: TestClient, version: AgentVersion, topic: str = "forge") -> dict[str, Any]:
@@ -208,26 +158,6 @@ def test_a_run_reaches_a_cited_decision_and_the_trace_reconstructs_it(
     assert "get_fact tool" in first_call.messages[0].content
 
 
-def test_the_seeded_agent_runs_on_the_default_gateway(
-    client: TestClient, skeleton: AgentVersion
-) -> None:
-    """No dependency override: exactly what `docker compose up` + seed + curl does.
-
-    Every other test installs its own scripted adapter, which would happily pass even
-    if the shipped configuration could not run the shipped agent. This one proves the
-    demo itself works.
-    """
-    run = start_run(client, skeleton, topic="governance")
-
-    assert run["status"] == "completed"
-
-    trace = get_trace(client, run["id"])
-
-    assert step_kinds(trace) == [(1, "reason"), (2, "tool"), (3, "reason"), (4, "decision")]
-    assert trace["steps"][1]["tool_invocation"]["result"]["topic"] == "governance"
-    assert trace["steps"][3]["decision"]["citations"] == ["R-000"]
-
-
 def test_the_run_summary_endpoint_agrees_with_the_start_response(
     client: TestClient, skeleton: AgentVersion, scripted: Callable[..., FakeAdapter]
 ) -> None:
@@ -295,7 +225,9 @@ def test_a_model_that_never_finishes_stops_at_max_steps(
     def two_steps(document: dict[str, Any]) -> None:
         document["guardrails"]["max_steps"] = 2
 
-    version = publish_variant(committed_session, tenant, "skeleton-never-finishes", two_steps)
+    version = publish_skeleton(
+        committed_session, tenant, slug="skeleton-never-finishes", mutate=two_steps
+    )
     adapter = scripted(LOOK_UP_FORGE, repeat_last=True)
 
     run = start_run(client, version)
@@ -321,7 +253,9 @@ def test_a_run_that_outspends_its_budget_stops_and_the_spend_is_traced(
     def tiny_budget(document: dict[str, Any]) -> None:
         document["model"]["max_tokens_per_run"] = 100  # one scripted turn is 300
 
-    version = publish_variant(committed_session, tenant, "skeleton-tiny-budget", tiny_budget)
+    version = publish_skeleton(
+        committed_session, tenant, slug="skeleton-tiny-budget", mutate=tiny_budget
+    )
     scripted(LOOK_UP_FORGE, APPROVE)
 
     run = start_run(client, version)
@@ -360,6 +294,24 @@ def test_an_unknown_tool_is_recorded_and_escalates_without_executing(
     assert trace["events"][-1]["payload"]["reason"] == "tool_refused"
 
 
+def test_a_registered_tool_the_dna_does_not_grant_is_refused(
+    client: TestClient, skeleton: AgentVersion, scripted: Callable[..., FakeAdapter]
+) -> None:
+    """Least privilege end to end: the AP tools exist, but not for this agent."""
+    scripted(tool_turn("approve_invoice", {"invoice_id": "inv-0001"}), APPROVE)
+
+    run = start_run(client, skeleton)
+
+    assert run["status"] == "escalated"
+
+    trace = get_trace(client, run["id"])
+    invocation = trace["steps"][1]["tool_invocation"]
+
+    assert invocation["status"] == "blocked"
+    assert "not granted" in invocation["error"]
+    assert invocation["result"] is None
+
+
 def test_invalid_tool_arguments_escalate_without_executing(
     client: TestClient, skeleton: AgentVersion, scripted: Callable[..., FakeAdapter]
 ) -> None:
@@ -389,9 +341,11 @@ def test_a_definition_needing_the_knowledge_layer_refuses_to_run(
     """Valid DNA the build cannot honour escalates rather than running a lesser agent."""
 
     def with_knowledge(document: dict[str, Any]) -> None:
-        document["knowledge"]["collections"] = ["meridian-ap-tacit-rules@1.0.0"]
+        document["knowledge"]["collections"] = ["meridian-ap-policy-documents@1.0.0"]
 
-    version = publish_variant(committed_session, tenant, "skeleton-needs-knowledge", with_knowledge)
+    version = publish_skeleton(
+        committed_session, tenant, slug="skeleton-needs-knowledge", mutate=with_knowledge
+    )
     adapter = scripted(LOOK_UP_FORGE, APPROVE)
 
     run = start_run(client, version)
@@ -413,9 +367,7 @@ def test_an_unpublished_version_cannot_be_run(
     client: TestClient, committed_session: Session, tenant: Tenant
 ) -> None:
     """A draft has not passed its eval gate, so it is a 409 and never a run."""
-    version = publish_variant(
-        committed_session, tenant, "skeleton-draft", lambda _: None, status="draft"
-    )
+    version = publish_skeleton(committed_session, tenant, slug="skeleton-draft", status="draft")
 
     response = client.post(
         RUNS_URL,

@@ -1,20 +1,26 @@
 """The tool registry.
 
 Tools are registered out of band and read-only through the API — an agent can be
-*granted* a tool, never create one. Phase 3.2 registers exactly one: a trivial,
-deterministic, side-effect-free lookup that exists to prove the path from model to
-gateway to result and back. The MeridianERP tools arrive in Phase 4.2.
+*granted* a tool, never create one. The catalogue is the eight MeridianERP and
+rule-lookup tools of :mod:`app.tools.meridian` (FR-C4), plus one trivial fact lookup
+that belongs to the platform rather than to the domain and exists so the runtime can be
+exercised without any business data at all.
 """
 
 from typing import Any
 
-from app.tools.contract import ToolContract
+from app.erp.store import ErpStore, get_erp
+from app.rules.catalog import catalog_rule_set
+from app.rules.model import RuleSet
+from app.tools.contract import ToolContract, ToolInput
+from app.tools.meridian import meridian_tools
 
 GET_FACT_REF = "skeleton-get-fact@1.0.0"
 GET_FACT_NAME = "get_fact"
 
-#: The entire world this skeleton tool knows about. A dict, not a database: the point
-#: is a deterministic round trip, not a knowledge layer (that is Phase 4.3).
+#: The entire world this tool knows about. A dict, not a database: it exists to prove a
+#: deterministic round trip from model to gateway and back, with no domain attached —
+#: which is what makes it useful as the runtime's own regression fixture.
 _FACTS: dict[str, str] = {
     "forge": "Forge executes business agents from declarative, versioned DNA documents.",
     "governance": "Least privilege, HITL approvals, eval-gated publishing, full traceability.",
@@ -45,14 +51,14 @@ GET_FACT_OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-def _get_fact(arguments: dict[str, Any]) -> dict[str, Any]:
+def _get_fact(call: ToolInput) -> dict[str, Any]:
     """Return the fact for a topic.
 
     Total by construction: the input schema's ``enum`` means the gateway has already
     rejected any topic that is not a key, so there is no "unknown topic" branch to get
     wrong. Pure, deterministic, no I/O.
     """
-    topic = str(arguments["topic"])
+    topic = str(call.arguments["topic"])
     return {"topic": topic, "fact": _FACTS[topic]}
 
 
@@ -66,6 +72,20 @@ GET_FACT = ToolContract(
 )
 
 
+def build_tools(erp: ErpStore | None = None, rule_set: RuleSet | None = None) -> list[ToolContract]:
+    """Every registered tool, bound to one ERP and one rule set.
+
+    Defaults exist for scripts and unit tests: the process-wide simulated ERP, and the
+    rule catalogue as shipped. The API never relies on them — ``app.api.deps`` loads the
+    rules from the database per request, which is what makes an edited rule take effect
+    without a redeploy.
+    """
+    return [
+        GET_FACT,
+        *meridian_tools(erp or get_erp(), rule_set or catalog_rule_set()),
+    ]
+
+
 class ToolRegistry:
     """The catalogue of tools the gateway is able to run.
 
@@ -75,7 +95,7 @@ class ToolRegistry:
     """
 
     def __init__(self, tools: list[ToolContract] | None = None) -> None:
-        self._tools = list(tools if tools is not None else [GET_FACT])
+        self._tools = list(tools if tools is not None else build_tools())
 
     def by_name(self, name: str) -> ToolContract | None:
         """Return the tool a model called, or ``None`` if no such tool is registered."""

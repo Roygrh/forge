@@ -12,21 +12,40 @@ budget hiding a systematic prompt/schema mismatch a human should see.
 """
 
 import json
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+# The decision vocabulary is platform-level and shared with the rules layer and the
+# adapters, so it lives in a dependency-free module (see app/actions.py) and is
+# re-exported here, where the runtime's readers expect to find it.
+from app.actions import (
+    ACTION_RESTRICTIVENESS,
+    DECISION_ACTIONS,
+    STATUS_FOR_ACTION,
+    DecisionAction,
+    most_restrictive,
+)
 from app.llm.contract import CompletionResult, Message, ToolCall
+
+__all__ = [
+    "ACTION_RESTRICTIVENESS",
+    "DECISION_ACTIONS",
+    "DECISION_SCHEMA",
+    "MAX_OUTPUT_RETRIES",
+    "RULE_ID_PATTERN",
+    "STATUS_FOR_ACTION",
+    "Decision",
+    "DecisionAction",
+    "OutputValidationError",
+    "correction_message",
+    "interpret",
+    "most_restrictive",
+]
 
 #: Exactly one corrective round. The count is the contract, so it lives next to the
 #: schema it protects rather than inside the loop.
 MAX_OUTPUT_RETRIES = 1
-
-#: The decision vocabulary is platform-level, not per-agent: the same four actions
-#: appear in the API contract (openapi.yaml ``RunStep.decision``), the eval cases, and
-#: the tacit rule set. An agent chooses among them; it does not invent its own.
-DecisionAction = Literal["auto_approve", "escalate", "block_escalate", "priority_queue"]
-DECISION_ACTIONS: tuple[str, ...] = ("auto_approve", "escalate", "block_escalate", "priority_queue")
 
 #: R-xxx, the citation format of the governed rule set (R-001 … R-092).
 RULE_ID_PATTERN = r"^R-\d{3}$"
@@ -56,17 +75,16 @@ DECISION_SCHEMA: dict[str, Any] = {
             "minLength": 1,
             "description": "Why this action follows from those rules.",
         },
+        "output": {
+            "type": "object",
+            "description": (
+                "Optional structured result for agents whose job is extraction rather "
+                "than adjudication — the normalised invoice from intake, say. The "
+                "governed part of a decision is always the action and its citations; "
+                "this is the agent-specific payload beside them."
+            ),
+        },
     },
-}
-
-#: Which run status a decided action produces. ``escalate``/``block_escalate`` are
-#: legitimate outcomes of a working loop — the agent decided a human should look — so
-#: the run ends ``escalated`` without ever having been a failure.
-STATUS_FOR_ACTION: dict[str, str] = {
-    "auto_approve": "completed",
-    "priority_queue": "completed",
-    "escalate": "escalated",
-    "block_escalate": "escalated",
 }
 
 
@@ -78,6 +96,7 @@ class Decision(BaseModel):
     action: DecisionAction
     citations: list[str] = Field(min_length=1)
     reasoning: str = Field(min_length=1)
+    output: dict[str, Any] | None = None
 
     @property
     def run_status(self) -> str:
@@ -85,8 +104,13 @@ class Decision(BaseModel):
         return STATUS_FOR_ACTION[self.action]
 
     def as_payload(self) -> dict[str, Any]:
-        """The JSON form persisted on the run step and in the ``decision.made`` event."""
-        return self.model_dump()
+        """The JSON form persisted on the run step and in the ``decision.made`` event.
+
+        ``exclude_none`` keeps a decision that carries no structured payload exactly the
+        shape it has always been — an optional field should not appear as a null in
+        every historical record.
+        """
+        return self.model_dump(exclude_none=True)
 
 
 class OutputValidationError(Exception):

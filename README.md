@@ -31,12 +31,23 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 | 1 | Discovery & requirements | ✅ Complete |
 | 2 | Architecture & contracts | ✅ Complete |
 | 3 | Walking skeleton (running platform foundation) | ✅ Complete |
-| 4 | Capabilities (agents, governance, knowledge, HITL, evals, observability) | ⬜ Planned |
+| 4.1 | The accounts-payable domain (ERP, tools, rules as data, three agents) | ✅ Complete |
+| 4.2–4.6 | Governance · knowledge · HITL · evals · observability | ⬜ Planned |
 | 5 | Deployment | ⬜ Planned |
 | 6 | Demo packaging | ⬜ Planned |
 
-**The walking skeleton runs end to end today, in a browser.** `docker compose up` brings up PostgreSQL, the API, and the web app; a seeded agent — a declarative DNA document, validated against `dna-schema.json` — is loaded by the runtime, which calls a model through the LLM gateway under the budgets its DNA declares, invokes a tool through the tool gateway after checking the autonomy its DNA grants, and reaches a decision that cites a rule ID. Every model call, tool call, decision, and refusal is appended to the audit log, and `GET /runs/{id}/trace` reconstructs the whole run from those events alone. It does this with no API key and no network: the provider is a line in the DNA, and swapping it is the only change needed to run the same agent against a real model.
+**A real invoice reaches a rule-cited decision today, in a browser.** `docker compose up` brings up PostgreSQL, the API, and the web app; `python -m scripts.seed` installs Meridian's governed rule set and three published agents. Press **Run** on the Invoice Validator and it reads the invoice from the simulated ERP, establishes the vendor's trust tier and history, matches the purchase order and the goods receipts, retrieves the rules that apply — and decides, citing them:
 
-At <http://localhost:5173> that is one click. The catalog shows each agent's model, the tools its DNA grants and at what autonomy, and its guardrails; pressing **Run** starts a run and opens its trace — the ordered steps, the gateway's verdict on each tool call, and the final decision with the rule it cited. Underneath sits the append-only event log the timeline was projected from, so the screen can be checked against its source rather than trusted.
+```
+auto_approve · cites R-001, R-010
+  R-001 (vendor.trust_tier eq 'trusted'; vendor.relationship_years gte 3;
+         match.po_found is_true; match.price_variance_pct lte 2 (actual 0.80))
+```
 
-The business rules, knowledge retrieval, human approvals, and the eval gate are Phase 4 — the skeleton is deliberately trivial so that what it demonstrates is the *governance path*, not the agent. See `src/backend/README.md` for the three-command quickstart, and `src/frontend/README.md` for the UI.
+Send it a $12,000 invoice instead and two rules fire with different answers, so the most restrictive wins and the decision says so: `escalate · cites R-001, R-010, R-020, R-090`. Send it a duplicate invoice number and it blocks — and `approve_invoice` is never called. Every model call, tool call, decision, and refusal is appended to the audit log, and `GET /runs/{id}/trace` reconstructs the whole run from those events alone. It does this with no API key and no network: the provider is a line in the DNA, and swapping it is the only change needed to run the same agent against a real model.
+
+**The rules are data, not code.** Meridian's tacit rules (R-001 … R-092) are rows in a table, each with its statement, its authority, and machine-evaluable conditions. The validator agent contains none of them — it retrieves them and reasons over what it retrieved. Lower a threshold with one `UPDATE` and the next run decides differently: no code change, no rebuild, no redeploy.
+
+**Least privilege is visible on the screen.** The three agents differ only in what their definitions grant: intake may read an invoice and nothing else; the validator may approve one up to a ceiling declared in its DNA, and is *forbidden* to schedule payments; comms may not contact a vendor without a human, so its run stops in `awaiting_approval` with the message drafted and unsent. Each of those is enforced at the tool gateway and recorded in the trace.
+
+Knowledge retrieval with authority ranking, the approval queue, and the eval publish gate are the rest of Phase 4. See `src/backend/README.md` for the quickstart, and `src/frontend/README.md` for the UI.
