@@ -28,9 +28,10 @@ sequenceDiagram
         Runtime->>LLMGW: Decide (schema-constrained)
         LLMGW-->>Runtime: escalate, reason = no-rule-match
         Note over Runtime,ToolGW: Fail closed — never guess, never execute
-        Runtime->>DB: Append decision escalate (R-091)
+            Runtime->>DB: Append decision escalate (R-091)
+        Runtime->>DB: Append governance.blocked (reason_code = no_rule_match)
     end
-    Runtime->>DB: Append run.completed (awaiting human)
+    Runtime->>DB: Append terminal event (awaiting human)
 ```
 
 ## What to notice
@@ -46,3 +47,9 @@ sequenceDiagram
   so `require_citations` (R-092) holds for guardrail outcomes too.
 - **Both outcomes are traced** — the block and the escalation are appended events,
   reconstructable like any other run (ADR-008, FR-G1).
+- **A platform refusal adds a governance step** (Phase 4.2) — when the *platform* stops a
+  run rather than the agent deciding, it appends a `governance.blocked` event carrying a
+  machine-readable `reason_code`, the plain-language explanation, and the circumstance.
+  The no-rule-match branch above is one of them (`no_rule_match`); a tool the DNA forbids
+  is another (`permission_denied`). The full vocabulary is `app/governance.py`, and a run
+  carries at most one: the platform stops once, and it always says why.

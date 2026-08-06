@@ -2,7 +2,7 @@
   "identity": {
     "name": "Invoice Validator",
     "slug": "invoice-validator",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "tenant_id": "meridian-supply-co",
     "type": "workflow",
     "description": "Validates incoming vendor invoices for Meridian Supply Co. against the governed AP rule set (tacit rules v1.0.0): vendor trust, PO matching tolerances, amount thresholds, non-PO handling, duplicate/fraud guards, and urgency. Retrieves the rules rather than containing them, and outputs exactly one action per invoice — auto_approve, escalate, block_escalate, or priority_queue — citing the rule IDs it applied."
@@ -40,6 +40,7 @@
   "guardrails": {
     "max_steps": 16,
     "timeout_seconds": 120,
+    "min_decision_confidence": 0.85,
     "escalate_on_no_rule_match": true,
     "require_citations": true
   },

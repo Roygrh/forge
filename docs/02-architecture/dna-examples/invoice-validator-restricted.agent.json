@@ -1,29 +1,49 @@
 {
   "identity": {
-    "name": "Invoice Validator",
-    "slug": "invoice-validator",
+    "name": "Invoice Validator (approval revoked)",
+    "slug": "invoice-validator-restricted",
     "version": "1.1.0",
     "tenant_id": "meridian-supply-co",
     "type": "workflow",
-    "description": "Validates incoming vendor invoices for Meridian Supply Co. against the governed AP rule set (tacit rules v1.0.0): vendor trust, PO matching tolerances, amount thresholds, non-PO handling, duplicate/fraud guards, and urgency. Retrieves the rules rather than containing them, and outputs exactly one action per invoice — auto_approve, escalate, block_escalate, or priority_queue — citing the rule IDs it applied."
+    "description": "The invoice validator with one line of its definition changed: approve_invoice is granted as forbidden instead of autonomous. Same runtime, same rules, same invoice — and the tool gateway refuses the approval, records permission_denied, and stops the run. It exists to make least privilege visible: what an agent may do is a property of its published definition, not of the code, and it holds even when the agent asks anyway."
   },
   "instructions": {
     "system_blocks": [],
     "task_prompt": "You validate one vendor invoice per run against Meridian's governed AP rules. The run input names the invoice: {\"invoice_id\": \"inv-xxxx\"}.\n\nProcedure. (1) Read the invoice with read_invoice. (2) Establish vendor context with get_vendor: trust tier, length of relationship, prior invoice count, open disputes, and the bank account on file. (3) If the invoice references a PO, run match_po for the price variance and get_receipts for what actually arrived. (4) Retrieve the rules that apply with query_rules — it returns each applicable rule with its ID, its statement, the facts it matched on, and the action it implies, plus the governance rules always in force.\n\nDeciding. Never restate a rule from memory and never invent one: the only rules that exist are the ones query_rules returned. If several rules propose different actions, the higher-authority source wins and, at equal authority, the most restrictive action wins (R-090). If no rule applies, or you are not confident, decide escalate and say plainly that no rule matched (R-091). Every decision must cite the rule IDs it applied (R-092).\n\nActing. Call approve_invoice only when your decided action is auto_approve, only for the amount the invoice itself states, and pass the rule IDs that authorise it. You are not permitted to schedule payments — that belongs to another agent, and the grant is recorded as forbidden so a reviewer can see it was considered. When information is missing, use request_info_from_vendor rather than assuming; it requires a human approval, so the run will pause rather than send anything on its own."
   },
   "tools": [
-    { "ref": "meridian-erp-read-invoice@1.0.0", "autonomy": "autonomous" },
-    { "ref": "meridian-erp-get-vendor@1.0.0", "autonomy": "autonomous" },
-    { "ref": "meridian-erp-match-po@1.0.0", "autonomy": "autonomous" },
-    { "ref": "meridian-erp-get-receipts@1.0.0", "autonomy": "autonomous" },
-    { "ref": "meridian-ap-rules-query@1.0.0", "autonomy": "autonomous" },
+    {
+      "ref": "meridian-erp-read-invoice@1.0.0",
+      "autonomy": "autonomous"
+    },
+    {
+      "ref": "meridian-erp-get-vendor@1.0.0",
+      "autonomy": "autonomous"
+    },
+    {
+      "ref": "meridian-erp-match-po@1.0.0",
+      "autonomy": "autonomous"
+    },
+    {
+      "ref": "meridian-erp-get-receipts@1.0.0",
+      "autonomy": "autonomous"
+    },
+    {
+      "ref": "meridian-ap-rules-query@1.0.0",
+      "autonomy": "autonomous"
+    },
     {
       "ref": "meridian-erp-approve-invoice@1.0.0",
-      "autonomy": "autonomous",
-      "config": { "max_amount_usd": 10000 }
+      "autonomy": "forbidden"
     },
-    { "ref": "meridian-erp-request-info-from-vendor@1.0.0", "autonomy": "requires_approval" },
-    { "ref": "meridian-erp-schedule-payment@1.0.0", "autonomy": "forbidden" }
+    {
+      "ref": "meridian-erp-request-info-from-vendor@1.0.0",
+      "autonomy": "requires_approval"
+    },
+    {
+      "ref": "meridian-erp-schedule-payment@1.0.0",
+      "autonomy": "forbidden"
+    }
   ],
   "knowledge": {
     "collections": [],

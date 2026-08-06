@@ -1,65 +1,35 @@
 """Fail-closed stops, with a reason a human can act on.
 
-Golden rule 3: on doubt, ambiguity, or missing permission the run escalates. Every way
-that can happen is enumerated here, so an escalation in the trace always says *why* —
-"escalated" with no reason is an incident report with the incident removed.
+Golden rule 3: on doubt, ambiguity, or missing permission the run stops. *Why* it
+stopped is :class:`~app.governance.GovernanceReason` — one enum, shared by the tool
+gateway that raises the condition, the runtime that catches it, the audit log that
+records it, and the API that serves it. Keeping the vocabulary in one dependency-free
+module is what stops those four from drifting into different names for the same refusal.
+
+This module holds only the exception that carries it.
 """
 
-from enum import StrEnum
+from app.governance import GovernanceReason
 
-
-class EscalationReason(StrEnum):
-    """Why a run stopped short of a decision."""
-
-    INVALID_OUTPUT = "invalid_output"
-    """Model output failed the response schema twice — once, then once after correction
-    (ADR-006). Malformed output never becomes an action."""
-
-    TOOL_REFUSED = "tool_refused"
-    """The tool gateway would not execute the call: unknown tool, missing grant,
-    forbidden tool, or arguments that failed the tool's schema (FR-C5)."""
-
-    MAX_STEPS_EXCEEDED = "max_steps_exceeded"
-    """The loop reached ``guardrails.max_steps`` without reaching a decision."""
-
-    TIMEOUT = "timeout"
-    """The run passed ``guardrails.timeout_seconds`` of wall clock."""
-
-    BUDGET_EXCEEDED = "budget_exceeded"
-    """The run reached a token or cost ceiling from the DNA ``model`` block."""
-
-    PROVIDER_UNAVAILABLE = "provider_unavailable"
-    """The DNA names a provider or model the gateway cannot serve or meter."""
-
-    UNSUPPORTED_DEFINITION = "unsupported_definition"
-    """The DNA is valid but declares a capability this build cannot honour — e.g.
-    knowledge collections before the knowledge layer exists. Running it anyway would
-    silently execute a *different*, less-informed agent than the one published."""
-
-    AGENT_DECISION = "agent_decision"
-    """Not a failure: the agent reached a decision whose action is a human queue
-    (``escalate`` / ``block_escalate``). The loop worked; the answer is 'a person'."""
-
-    APPROVAL_REQUIRED = "approval_required"
-    """The agent called a tool its DNA grants only ``requires_approval``. The call was
-    validated and **parked**: the run stops in ``awaiting_approval`` and the tool did
-    nothing. An approval the platform cannot obtain never decays into an execution
-    (FR-E2, FR-E3); the queue that resumes such a run arrives in Phase 4.4."""
+__all__ = ["FailClosedError", "GovernanceReason"]
 
 
 class FailClosedError(Exception):
     """Stop the run short of a decision.
 
-    Raised from anywhere in the loop; caught once, at the top, where it becomes the
-    terminal event and status named by ``run_status`` — ``escalated`` for every reason
-    but one. A parked approval ends the run ``awaiting_approval`` instead, because
-    "a human must act before this continues" is a different state from "a human must
-    decide instead of the agent", and a queue cannot be built on a status that conflates
-    them.
+    Raised from anywhere in the loop — the tool gateway's verdict, a blown budget, a
+    decision below its confidence floor — and caught in exactly one place, at the top of
+    :meth:`~app.runtime.loop.AgentRuntime.start_run`, where it becomes one governance
+    step plus the terminal event and status named by ``run_status``.
+
+    ``run_status`` is ``escalated`` for every reason but one. A parked approval ends the
+    run ``awaiting_approval`` instead, because "a human must act before this continues"
+    is a different state from "a human must decide instead of the agent", and an approval
+    queue cannot be built on a status that conflates them.
     """
 
     def __init__(
-        self, reason: EscalationReason, detail: str, *, run_status: str = "escalated"
+        self, reason: GovernanceReason, detail: str, *, run_status: str = "escalated"
     ) -> None:
         self.reason = reason
         self.detail = detail

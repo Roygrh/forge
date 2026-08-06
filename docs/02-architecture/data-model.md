@@ -66,9 +66,10 @@ erDiagram
         uuid tenant_id FK
         uuid run_id FK
         int step_no
-        text kind "reason | tool | decision"
+        text kind "reason | tool | decision | governance"
         jsonb model_call "model, tokens, cost"
-        jsonb decision "action plus rule citations"
+        jsonb decision "action, rule citations, confidence"
+        jsonb governance "reason_code, explanation, detail"
         timestamptz created_at
     }
     tool_invocations {
@@ -184,6 +185,15 @@ decompose a run into reason/tool/decision steps; `tool_invocations` hang off the
 that issued them and, when the tool's autonomy is `requires_approval`, own exactly one
 `approval` (FR-E2). Knowledge is `collections → chunks`; evals are `suites → cases`, with
 each `eval_run` scored against one `agent_version`.
+
+**A refusal is a step, not a footnote.** When the platform stops a run — a tool the DNA
+does not grant, a blown budget, a decision below its confidence floor — it writes a
+`run_steps` row of kind `governance` carrying the machine-readable `reason_code`, the
+plain-language explanation that goes with it, and the circumstance that triggered it.
+The reason codes are defined once (`app/governance.py`) and used unchanged by the
+runtime, the audit log, the API, and the UI. A run carries at most one: the platform
+stops once, and it always says why (FR-C5). Refusals that never became a run — an
+operation denied to a role that lacked its permission — are events without a `run_id`.
 
 **Events are the source of truth.** The `events` table is append-only: the application
 role is granted `INSERT`/`SELECT` only — no `UPDATE`, no `DELETE` (ADR-008). Immutability

@@ -32,7 +32,8 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 | 2 | Architecture & contracts | ✅ Complete |
 | 3 | Walking skeleton (running platform foundation) | ✅ Complete |
 | 4.1 | The accounts-payable domain (ERP, tools, rules as data, three agents) | ✅ Complete |
-| 4.2–4.6 | Governance · knowledge · HITL · evals · observability | ⬜ Planned |
+| 4.2 | Governance in depth (autonomy, fail-closed, limits, SoD, visible blocks) | ✅ Complete |
+| 4.3–4.6 | Knowledge · HITL · evals · observability | ⬜ Planned |
 | 5 | Deployment | ⬜ Planned |
 | 6 | Demo packaging | ⬜ Planned |
 
@@ -48,6 +49,18 @@ Send it a $12,000 invoice instead and two rules fire with different answers, so 
 
 **The rules are data, not code.** Meridian's tacit rules (R-001 … R-092) are rows in a table, each with its statement, its authority, and machine-evaluable conditions. The validator agent contains none of them — it retrieves them and reasons over what it retrieved. Lower a threshold with one `UPDATE` and the next run decides differently: no code change, no rebuild, no redeploy.
 
-**Least privilege is visible on the screen.** The three agents differ only in what their definitions grant: intake may read an invoice and nothing else; the validator may approve one up to a ceiling declared in its DNA, and is *forbidden* to schedule payments; comms may not contact a vendor without a human, so its run stops in `awaiting_approval` with the message drafted and unsent. Each of those is enforced at the tool gateway and recorded in the trace.
+**Least privilege is visible on the screen.** The agents differ only in what their definitions grant: intake may read an invoice and nothing else; the validator may approve one up to a ceiling declared in its DNA, and is *forbidden* to schedule payments; comms may not contact a vendor without a human, so its run stops in `awaiting_approval` with the message drafted and unsent. Each of those is enforced at the tool gateway and recorded in the trace.
+
+**And when the platform stops something, it says so.** Every refusal — a tool the definition forbids, a blown budget, a step limit, a decision below its confidence floor, a case no rule covers — carries a machine-readable reason code, a plain-language explanation, and its own step in the trace. Press **Run** on *Invoice Validator (approval revoked)*, which is the validator with one line of its definition changed, and the run opens with:
+
+```
+⛔ BLOCKED BY THE PLATFORM     permission_denied
+
+The agent asked for a tool its own definition does not permit it to use.
+Least privilege is part of the published definition, so the call was
+refused and nothing was executed.
+```
+
+A tool handler is invoked in exactly one place in the codebase, and a test reads the source tree to keep it that way. No role may both configure an agent and approve its actions — that is a permission matrix the build refuses to start without, not a note in a policy document.
 
 Knowledge retrieval with authority ranking, the approval queue, and the eval publish gate are the rest of Phase 4. See `src/backend/README.md` for the quickstart, and `src/frontend/README.md` for the UI.

@@ -17,7 +17,7 @@ The SPA is useless without the API, so start the backend first
 ```bash
 cd deploy && docker compose up -d --build      # Postgres + API + this SPA
 docker compose exec api alembic upgrade head   # schema
-docker compose exec api python -m scripts.seed # tenant + rules + three agents
+docker compose exec api python -m scripts.seed # tenant + rules + agents
 ```
 
 Then open <http://localhost:5173>. That is all — the `web` service in the compose file
@@ -28,6 +28,13 @@ decision. Each agent's button sends the input that shows what its definition per
 validator auto-approves `inv-0001` (E-01) citing R-001 and R-010; intake normalises the
 same invoice and can do nothing else; comms drafts a vendor question and stops in
 `awaiting_approval`, because its one tool is granted only with a human in the loop.
+
+Then press **Run** on *Invoice Validator (approval revoked)* — the same agent with one
+line of its definition changed. The run opens with a red **⛔ BLOCKED BY THE PLATFORM**
+banner naming `permission_denied`, the timeline shows the denied tool call and the
+governance step that stopped the run, and the explanation is written for someone who has
+never seen the API. A blocked run is meant to be unmistakable from across the room; that
+is the point of the whole screen.
 
 Running the validator on the *same* invoice twice escalates the second time: the
 simulated ERP has already approved it and will not approve it again. That is deliberate —
@@ -94,7 +101,7 @@ Endpoints consumed, all read-only except the one that starts a run:
 | `src/App.tsx` | Two routes over `window.location.hash`: `#/` and `#/runs/<id>` |
 | `src/screens/AgentsScreen.tsx` | The catalog: each agent's model, tool grants, guardrails, and a Run button |
 | `src/screens/RunScreen.tsx` | One run: outcome header, timeline, raw events |
-| `src/components/Timeline.tsx` | The ordered steps — reason, tool, decision — each rendered for what it is |
+| `src/components/Timeline.tsx` | The ordered steps — reason, tool, decision, and the platform’s own **blocked** step — each rendered for what it is |
 | `src/components/RawEvents.tsx` | The append-only log the timeline was projected from (ADR-008) |
 | `src/components/Pill.tsx` | The badge vocabulary: one colour per state, exhaustive over the contract's unions |
 | `src/components/{Shell,Json,Disclosure,Feedback}.tsx` | Chrome, JSON blocks, disclosures, loading/error/empty |

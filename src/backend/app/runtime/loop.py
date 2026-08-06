@@ -22,14 +22,16 @@ recovering, which is what makes the run reconstructable from its trace alone.
 
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
 from pydantic import ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dna.model import Dna
+from app.governance import GovernanceReason
 from app.llm.contract import (
     AdapterError,
     Budget,
@@ -42,7 +44,7 @@ from app.llm.contract import (
 )
 from app.llm.gateway import LlmGateway
 from app.models import AgentVersion, Run
-from app.runtime.errors import EscalationReason, FailClosedError
+from app.runtime.errors import FailClosedError
 from app.runtime.output import (
     DECISION_ACTIONS,
     DECISION_SCHEMA,
@@ -51,6 +53,7 @@ from app.runtime.output import (
     OutputValidationError,
     correction_message,
     interpret,
+    review_decision,
 )
 from app.runtime.trace import TraceRecorder
 from app.tools.gateway import ToolGateway
@@ -64,9 +67,12 @@ RUNTIME_PROTOCOL = (
     "  (a) call one of the tools you have been granted, or\n"
     "  (b) return your final decision as a JSON object with the fields "
     f"action (one of {', '.join(DECISION_ACTIONS)}), citations (a non-empty list of "
-    "rule IDs such as R-001), and reasoning.\n"
+    "rule IDs such as R-001), reasoning, and confidence (a number from 0 to 1).\n"
     "Every decision must cite the rule IDs it applied. If no rule matches, or your "
-    "confidence is low, decide escalate and say that no rule matched — never guess."
+    "confidence is low, decide escalate and say that no rule matched — never guess. "
+    "State your confidence honestly: a decision below this agent's declared floor is "
+    "escalated to a human whatever action you proposed, and a confidently wrong answer "
+    "is the one failure a reviewer cannot catch."
 )
 
 
@@ -114,8 +120,23 @@ class AgentRuntime:
                 max_tokens=dna.model.max_tokens_per_run,
                 max_cost_usd=dna.model.max_cost_usd_per_run,
             )
+            await self._enforce_daily_ceiling(dna, agent_version)
             decision = await self._reason(recorder, dna, run_input, budget)
+
+            # A decision can satisfy every schema and still not be allowed to stand:
+            # below the confidence floor, or citing the no-rule-match default (R-091).
+            # Raising here keeps every fail-closed stop on the one path below.
+            verdict = review_decision(decision, dna.guardrails)
+            if verdict is not None:
+                raise FailClosedError(*verdict)
         except FailClosedError as exc:
+            # **The one place a refusal is recorded.** Every fail-closed condition in the
+            # platform — a gateway denial, a blown budget, a low-confidence decision —
+            # arrives here as a FailClosedError and leaves as exactly one governance step
+            # followed by one terminal event. No path stops a run quietly.
+            await recorder.record_governance(
+                reason=exc.reason, detail=exc.detail, terminal_status=exc.run_status
+            )
             return await recorder.finish(
                 status=exc.run_status, budget=budget, reason=exc.reason, detail=exc.detail
             )
@@ -127,8 +148,41 @@ class AgentRuntime:
             status=decision.run_status,
             budget=budget,
             # A decided escalation is a working loop reaching a human, not a failure.
-            reason=EscalationReason.AGENT_DECISION if decision.run_status == "escalated" else None,
+            reason=GovernanceReason.AGENT_DECISION if decision.run_status == "escalated" else None,
         )
+
+    async def _enforce_daily_ceiling(self, dna: Dna, agent_version: AgentVersion) -> None:
+        """Refuse to start when this agent has spent its daily allowance (NFR-3).
+
+        The ceiling is on the **agent**, not on the version or the run, so a runaway
+        definition cannot be worked around by publishing a new version or by starting
+        more runs. Checked before the first model call: the cheapest place to stop is
+        before any spending, and a run that cannot afford to finish should not begin.
+        """
+        ceiling = dna.model.max_cost_usd_per_day
+        spent = await self._spend_today(agent_version)
+        if spent >= ceiling:
+            raise FailClosedError(
+                GovernanceReason.DAILY_BUDGET_EXCEEDED,
+                f"agent {dna.identity.slug!r} has spent ${spent} today against a "
+                f"model.max_cost_usd_per_day ceiling of ${ceiling}; no further runs "
+                "start until the day rolls over",
+            )
+
+    async def _spend_today(self, agent_version: AgentVersion) -> Decimal:
+        """What every run of this agent has cost since midnight UTC.
+
+        Summed from the ``runs`` table rather than tracked in memory: the ceiling has to
+        hold across processes, restarts, and versions, and the ledger that already
+        records what was spent is the only honest source for it.
+        """
+        midnight = datetime.combine(self._now().astimezone(UTC).date(), time.min, tzinfo=UTC)
+        total = await self._session.scalar(
+            select(func.coalesce(func.sum(Run.total_cost_usd), 0))
+            .join(AgentVersion, Run.agent_version_id == AgentVersion.id)
+            .where(AgentVersion.agent_id == agent_version.agent_id, Run.started_at >= midnight)
+        )
+        return Decimal(str(total or 0))
 
     async def _reason(
         self,
@@ -164,7 +218,7 @@ class AgentRuntime:
         for iteration in range(1, dna.guardrails.max_steps + 1):
             if self._now() >= deadline:
                 raise FailClosedError(
-                    EscalationReason.TIMEOUT,
+                    GovernanceReason.TIMEOUT,
                     f"run exceeded guardrails.timeout_seconds="
                     f"{dna.guardrails.timeout_seconds} at step {iteration}",
                 )
@@ -183,15 +237,17 @@ class AgentRuntime:
                 # validated and parked; the run stops here rather than deciding without
                 # the action it asked for, or executing it anyway (FR-E2).
                 raise FailClosedError(
-                    EscalationReason.APPROVAL_REQUIRED,
+                    GovernanceReason.APPROVAL_REQUIRED,
                     f"tool {outcome.tool_name!r} requires human approval "
                     f"(autonomy={outcome.autonomy}); the call is validated and parked, "
                     "and nothing was executed",
                     run_status="awaiting_approval",
                 )
             if not outcome.executed:
+                # The gateway already decided *which* refusal this was; the runtime does
+                # not re-derive it. One enforcement point, one reason code.
                 raise FailClosedError(
-                    EscalationReason.TOOL_REFUSED,
+                    outcome.reason or GovernanceReason.PERMISSION_DENIED,
                     outcome.error or f"tool {outcome.tool_name!r} did not execute",
                 )
 
@@ -215,7 +271,7 @@ class AgentRuntime:
             )
 
         raise FailClosedError(
-            EscalationReason.MAX_STEPS_EXCEEDED,
+            GovernanceReason.STEP_LIMIT,
             f"reached guardrails.max_steps={dna.guardrails.max_steps} without a decision",
         )
 
@@ -251,9 +307,9 @@ class AgentRuntime:
                         outcome="budget_exceeded",
                         budget=budget,
                     )
-                raise FailClosedError(EscalationReason.BUDGET_EXCEEDED, str(exc)) from exc
+                raise FailClosedError(GovernanceReason.BUDGET_EXCEEDED, str(exc)) from exc
             except (UnknownProviderError, AdapterError) as exc:
-                raise FailClosedError(EscalationReason.PROVIDER_UNAVAILABLE, str(exc)) from exc
+                raise FailClosedError(GovernanceReason.PROVIDER_UNAVAILABLE, str(exc)) from exc
 
             try:
                 output = interpret(result)
@@ -263,7 +319,7 @@ class AgentRuntime:
                 )
                 if attempt >= MAX_OUTPUT_RETRIES:
                     raise FailClosedError(
-                        EscalationReason.INVALID_OUTPUT,
+                        GovernanceReason.INVALID_OUTPUT,
                         f"output failed the response schema after {attempt + 1} attempts: {exc}",
                     ) from exc
                 # Feed the violation back once, then hold the model to the schema.
@@ -292,7 +348,7 @@ def _load_dna(agent_version: AgentVersion) -> Dna:
         return Dna.model_validate(agent_version.dna)
     except ValidationError as exc:
         raise FailClosedError(
-            EscalationReason.UNSUPPORTED_DEFINITION,
+            GovernanceReason.UNSUPPORTED_DEFINITION,
             f"stored DNA does not match the contract: {exc.error_count()} error(s)",
         ) from exc
 
@@ -307,13 +363,13 @@ def _require_supported(dna: Dna) -> None:
     """
     if dna.instructions.system_blocks:
         raise FailClosedError(
-            EscalationReason.UNSUPPORTED_DEFINITION,
+            GovernanceReason.UNSUPPORTED_DEFINITION,
             "DNA declares instruction system_blocks "
             f"({', '.join(dna.instructions.system_blocks)}) which this build cannot resolve",
         )
     if dna.knowledge.collections:
         raise FailClosedError(
-            EscalationReason.UNSUPPORTED_DEFINITION,
+            GovernanceReason.UNSUPPORTED_DEFINITION,
             "DNA declares knowledge collections "
             f"({', '.join(dna.knowledge.collections)}) but knowledge retrieval is not "
             "available in this build",

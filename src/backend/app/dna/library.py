@@ -22,6 +22,15 @@ AGENTS_DIR = Path(__file__).with_name("agents")
 #: validator could not.
 AP_AGENT_SLUGS: tuple[str, ...] = ("invoice-intake", "invoice-validator", "invoice-comms")
 
+#: A fourth definition that exists to be *refused*: the validator with approve_invoice
+#: granted as ``forbidden``. It carries no new capability — it is the same agent minus
+#: one permission — and it is shipped so that "the platform stops things, and shows you
+#: why" is one click away in the catalog rather than a paragraph in a README.
+GOVERNANCE_DEMO_SLUG = "invoice-validator-restricted"
+
+#: Every definition the seed publishes.
+SHIPPED_AGENT_SLUGS: tuple[str, ...] = (*AP_AGENT_SLUGS, GOVERNANCE_DEMO_SLUG)
+
 
 def agent_path(slug: str) -> Path:
     """Where a shipped definition lives inside the package."""

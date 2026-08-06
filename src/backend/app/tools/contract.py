@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from app.dna.model import Autonomy
+from app.governance import GovernanceReason
 
 #: Terminal states of one trip through the tool gateway, matching
 #: ``tool_invocations.status`` in the data model.
@@ -77,6 +78,11 @@ class ToolOutcome:
     Refusals are first-class values, not exceptions, because they must be *recorded*:
     a reviewer has to see what the agent tried to do, not only what it was allowed to
     do. The runtime decides what a refusal means for the run (it escalates).
+
+    ``reason`` carries the governance code the gateway assigned. The gateway is the only
+    place that decides *which* refusal this was; the runtime and the trace propagate that
+    code without re-deriving it, so the words in the audit log are the words the
+    enforcement point used.
     """
 
     tool_name: str
@@ -86,6 +92,7 @@ class ToolOutcome:
     status: InvocationStatus
     result: dict[str, Any] | None = None
     error: str | None = None
+    reason: GovernanceReason | None = None
 
     @property
     def executed(self) -> bool:

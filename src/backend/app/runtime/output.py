@@ -26,6 +26,8 @@ from app.actions import (
     DecisionAction,
     most_restrictive,
 )
+from app.dna.model import Guardrails
+from app.governance import GovernanceReason
 from app.llm.contract import CompletionResult, Message, ToolCall
 
 __all__ = [
@@ -33,6 +35,7 @@ __all__ = [
     "DECISION_ACTIONS",
     "DECISION_SCHEMA",
     "MAX_OUTPUT_RETRIES",
+    "NO_RULE_MATCH_RULE",
     "RULE_ID_PATTERN",
     "STATUS_FOR_ACTION",
     "Decision",
@@ -41,11 +44,16 @@ __all__ = [
     "correction_message",
     "interpret",
     "most_restrictive",
+    "review_decision",
 ]
 
 #: Exactly one corrective round. The count is the contract, so it lives next to the
 #: schema it protects rather than inside the loop.
 MAX_OUTPUT_RETRIES = 1
+
+#: The governed rule that *is* "no rule matched" (04-tacit-rules.md). A decision citing
+#: it is the fail-closed default having fired, and the runtime labels it as such.
+NO_RULE_MATCH_RULE = "R-091"
 
 #: R-xxx, the citation format of the governed rule set (R-001 … R-092).
 RULE_ID_PATTERN = r"^R-\d{3}$"
@@ -58,7 +66,7 @@ DECISION_SCHEMA: dict[str, Any] = {
     "title": "Forge agent decision",
     "type": "object",
     "additionalProperties": False,
-    "required": ["action", "citations", "reasoning"],
+    "required": ["action", "citations", "reasoning", "confidence"],
     "properties": {
         "action": {
             "enum": list(DECISION_ACTIONS),
@@ -74,6 +82,18 @@ DECISION_SCHEMA: dict[str, Any] = {
             "type": "string",
             "minLength": 1,
             "description": "Why this action follows from those rules.",
+        },
+        "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": (
+                "How confident the agent is in this decision, 0–1. Required: R-091 makes "
+                "low confidence a fail-closed condition, and a threshold cannot be "
+                "enforced against a number the agent was free not to state. Below the "
+                "floor its DNA declares, the runtime overrides the action to an "
+                "escalation whatever was proposed."
+            ),
         },
         "output": {
             "type": "object",
@@ -96,6 +116,7 @@ class Decision(BaseModel):
     action: DecisionAction
     citations: list[str] = Field(min_length=1)
     reasoning: str = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
     output: dict[str, Any] | None = None
 
     @property
@@ -111,6 +132,45 @@ class Decision(BaseModel):
         every historical record.
         """
         return self.model_dump(exclude_none=True)
+
+
+def review_decision(
+    decision: Decision, guardrails: Guardrails
+) -> tuple[GovernanceReason, str] | None:
+    """Judge a well-formed decision against the fail-closed doctrine (R-091).
+
+    A decision can satisfy every schema and still not be allowed to stand. Two cases,
+    checked in order of severity:
+
+    * **Low confidence.** The agent stated a confidence below the floor its own DNA
+      declares. Whatever it proposed — including ``auto_approve`` — the platform
+      overrides it to an escalation. This is the half of R-091 that a schema cannot
+      express, and it is why ``confidence`` is a required field.
+    * **No rule matched.** The decision cites R-091 itself, the fail-closed default. The
+      outcome (escalate) is already right; what this adds is the *reason code*, so the
+      trace says "no rule covered this" rather than the generic "the agent decided".
+
+    Returns ``None`` when the decision stands on its own. Nothing here re-decides the
+    business question — it only refuses to let one through.
+    """
+    if decision.confidence < guardrails.min_decision_confidence:
+        return (
+            GovernanceReason.LOW_CONFIDENCE,
+            f"decision confidence {decision.confidence} is below the "
+            f"guardrails.min_decision_confidence={guardrails.min_decision_confidence} "
+            f"this version declares; the proposed action {decision.action!r} was "
+            "overridden and the run escalated (R-091)",
+        )
+
+    if NO_RULE_MATCH_RULE in decision.citations:
+        return (
+            GovernanceReason.NO_RULE_MATCH,
+            f"the decision cites {NO_RULE_MATCH_RULE}, the fail-closed default: no "
+            "governed rule covered this case, so it goes to a human rather than being "
+            "guessed at",
+        )
+
+    return None
 
 
 class OutputValidationError(Exception):
@@ -175,7 +235,8 @@ def correction_message(error: OutputValidationError) -> Message:
             f"{problems}\n\n"
             "Reply with either a tool call, or a JSON object with exactly these fields: "
             f"action (one of {', '.join(DECISION_ACTIONS)}), citations (a non-empty list "
-            "of rule IDs like R-001), and reasoning. Do not add any other text. "
+            "of rule IDs like R-001), reasoning, and confidence (a number from 0 to 1). "
+            "Do not add any other text. "
             "This is the only correction attempt; a second invalid response escalates "
             "the run to a human."
         ),

@@ -204,8 +204,12 @@ def test_invalid_output_twice_escalates_fail_closed(
 
     trace = get_trace(client, run["id"])
 
-    assert step_kinds(trace) == [(1, "reason"), (2, "reason")]
+    assert step_kinds(trace) == [(1, "reason"), (2, "reason"), (3, "governance")]
     assert "decision.made" not in event_types(trace)
+    # The stop is a step of the run, with the code that caused it.
+    blocked = trace["steps"][2]["governance"]
+    assert blocked["reason_code"] == "invalid_output"
+    assert "did not fit the required format" in blocked["explanation"]
     terminal = trace["events"][-1]
     assert terminal["type"] == "run.escalated"
     assert terminal["payload"]["reason"] == "invalid_output"
@@ -237,9 +241,16 @@ def test_a_model_that_never_finishes_stops_at_max_steps(
 
     trace = get_trace(client, run["id"])
 
-    assert step_kinds(trace) == [(1, "reason"), (2, "tool"), (3, "reason"), (4, "tool")]
+    assert step_kinds(trace) == [
+        (1, "reason"),
+        (2, "tool"),
+        (3, "reason"),
+        (4, "tool"),
+        (5, "governance"),
+    ]
+    assert trace["steps"][4]["governance"]["reason_code"] == "step_limit"
     terminal = trace["events"][-1]
-    assert terminal["payload"]["reason"] == "max_steps_exceeded"
+    assert terminal["payload"]["reason"] == "step_limit"
 
 
 def test_a_run_that_outspends_its_budget_stops_and_the_spend_is_traced(
@@ -265,8 +276,9 @@ def test_a_run_that_outspends_its_budget_stops_and_the_spend_is_traced(
 
     trace = get_trace(client, run["id"])
 
-    assert step_kinds(trace) == [(1, "reason")]
+    assert step_kinds(trace) == [(1, "reason"), (2, "governance")]
     assert trace["steps"][0]["model_call"]["outcome"] == "budget_exceeded"
+    assert trace["steps"][1]["governance"]["reason_code"] == "budget_exceeded"
     assert trace["events"][-1]["payload"]["reason"] == "budget_exceeded"
 
 
@@ -285,13 +297,17 @@ def test_an_unknown_tool_is_recorded_and_escalates_without_executing(
 
     trace = get_trace(client, run["id"])
 
-    assert step_kinds(trace) == [(1, "reason"), (2, "tool")]
+    assert step_kinds(trace) == [(1, "reason"), (2, "tool"), (3, "governance")]
     invocation = trace["steps"][1]["tool_invocation"]
     assert invocation["status"] == "blocked"
     assert invocation["args"] == {"amount": 1_000_000}
     assert invocation["result"] is None
     assert "unknown tool" in invocation["error"]
-    assert trace["events"][-1]["payload"]["reason"] == "tool_refused"
+    # The gateway assigns the code; the tool step and the governance step
+    # that follows both carry it, so the refusal and the stop are one story.
+    assert invocation["reason_code"] == "tool_unknown"
+    assert trace["steps"][2]["governance"]["reason_code"] == "tool_unknown"
+    assert trace["events"][-1]["payload"]["reason"] == "tool_unknown"
 
 
 def test_a_registered_tool_the_dna_does_not_grant_is_refused(
@@ -310,6 +326,8 @@ def test_a_registered_tool_the_dna_does_not_grant_is_refused(
     assert invocation["status"] == "blocked"
     assert "not granted" in invocation["error"]
     assert invocation["result"] is None
+    assert invocation["reason_code"] == "permission_denied"
+    assert trace["steps"][2]["governance"]["reason_code"] == "permission_denied"
 
 
 def test_invalid_tool_arguments_escalate_without_executing(
@@ -327,6 +345,8 @@ def test_invalid_tool_arguments_escalate_without_executing(
 
     assert invocation["status"] == "blocked"
     assert "invalid arguments" in invocation["error"]
+    assert invocation["reason_code"] == "args_invalid"
+    assert trace["steps"][2]["governance"]["reason_code"] == "args_invalid"
 
 
 # --- Definitions this build cannot honour -------------------------------------
@@ -355,8 +375,13 @@ def test_a_definition_needing_the_knowledge_layer_refuses_to_run(
 
     trace = get_trace(client, run["id"])
 
-    assert trace["steps"] == []
-    assert event_types(trace) == ["run.started", "run.escalated"]
+    assert step_kinds(trace) == [(1, "governance")]
+    assert event_types(trace) == [
+        "run.started",
+        "governance.blocked",
+        "run.escalated",
+    ]
+    assert trace["steps"][0]["governance"]["reason_code"] == "unsupported_definition"
     assert trace["events"][-1]["payload"]["reason"] == "unsupported_definition"
 
 

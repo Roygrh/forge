@@ -72,6 +72,9 @@ class Guardrails(_Block):
 
     max_steps: int
     timeout_seconds: int
+    #: The confidence floor for this agent's decisions (R-091). A decision below it is
+    #: overridden to an escalation, whatever action it proposed.
+    min_decision_confidence: float
     escalate_on_no_rule_match: Literal[True]
     require_citations: Literal[True]
 

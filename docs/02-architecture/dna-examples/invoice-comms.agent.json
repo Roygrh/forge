@@ -2,7 +2,7 @@
   "identity": {
     "name": "Invoice Comms",
     "slug": "invoice-comms",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "tenant_id": "meridian-supply-co",
     "type": "workflow",
     "description": "Drafts and sends one question to a vendor when an invoice cannot be validated without more information. Its only tool is granted requires_approval: every outbound message is a proposal that a human releases, so the agent can compose on Meridian's behalf but never speak on it unattended."
@@ -29,6 +29,7 @@
   "guardrails": {
     "max_steps": 6,
     "timeout_seconds": 60,
+    "min_decision_confidence": 0.7,
     "escalate_on_no_rule_match": true,
     "require_citations": true
   },

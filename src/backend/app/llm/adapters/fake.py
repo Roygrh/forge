@@ -81,12 +81,22 @@ def decision_turn(
     citations: list[str],
     reasoning: str,
     *,
+    confidence: float = 1.0,
     input_tokens: int = DEFAULT_INPUT_TOKENS,
     output_tokens: int = DEFAULT_OUTPUT_TOKENS,
     cost_usd: Decimal = DEFAULT_COST_USD,
 ) -> ScriptedTurn:
-    """A turn carrying a well-formed final decision."""
-    payload = {"action": action, "citations": citations, "reasoning": reasoning}
+    """A turn carrying a well-formed final decision.
+
+    confidence defaults to certainty so a test that is not about the confidence floor
+    does not have to mention it; pass a low value to exercise the low_confidence override.
+    """
+    payload = {
+        "action": action,
+        "citations": citations,
+        "reasoning": reasoning,
+        "confidence": confidence,
+    }
     return ScriptedTurn(
         content=json.dumps(payload),
         input_tokens=input_tokens,

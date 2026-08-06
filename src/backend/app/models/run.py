@@ -34,7 +34,7 @@ class Run(Base):
 
 
 class RunStep(Base):
-    """One iteration of the reasoning loop: a reason, tool, or decision step."""
+    """One step of a run: the agent reasoning, acting, deciding — or the platform refusing."""
 
     __tablename__ = "run_steps"
     __table_args__ = (UniqueConstraint("run_id", "step_no"),)
@@ -43,10 +43,15 @@ class RunStep(Base):
     tenant_id: Mapped[TenantFk]
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id"), index=True)
     step_no: Mapped[int]
-    kind: Mapped[str] = mapped_column(comment="reason | tool | decision")
+    kind: Mapped[str] = mapped_column(comment="reason | tool | decision | governance")
     model_call: Mapped[dict[str, Any] | None] = mapped_column(comment="model, tokens, cost")
     decision: Mapped[dict[str, Any] | None] = mapped_column(
         comment="action plus rule citations (R-xxx); a decision without citations is a bug"
+    )
+    # A refusal is a step of the run, not an annotation on it: it has a position in the
+    # order, it is what happened next, and a reader must see it where it occurred.
+    governance: Mapped[dict[str, Any] | None] = mapped_column(
+        comment="reason_code, explanation, detail — why the platform stopped (FR-C5)"
     )
     created_at: Mapped[CreatedAt]
 

@@ -196,6 +196,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Run' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Agent version is not published
@@ -217,6 +218,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Run' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /runs/{runId}/trace:
@@ -227,8 +229,11 @@ paths:
       summary: Get the full run trace (steps, tool calls, decisions)
       description: >-
         A projection of the append-only events for this run (ADR-008). Every
-        model call, tool invocation, rule applied, and decision is present and
-        ordered, so the run is reconstructable (FR-G1).
+        model call, tool invocation, rule applied, decision, and **governance
+        refusal** is present and ordered, so the run is reconstructable (FR-G1).
+        A run the platform stopped carries exactly one step of kind
+        `governance`, holding the machine-readable reason code and the
+        explanation that goes with it.
       parameters:
         - $ref: '#/components/parameters/RoleHeader'
       responses:
@@ -237,6 +242,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RunTrace' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /approvals:
@@ -476,10 +482,14 @@ components:
       in: header
       required: true
       description: >-
-        Demonstration role for segregation of duties (NFR-5). configurator may
-        create/version/publish/suspend agents, ingest knowledge, and run evals;
-        approver may decide approvals; viewer is read-only. A role that lacks
-        the permission for an operation gets 403. This is not authentication.
+        Demonstration role for segregation of duties (NFR-5). configurator holds
+        read, agent.configure, agent.publish and run.start; approver holds read
+        and approval.decide; viewer holds read only. No role holds both
+        agent.configure/agent.publish and approval.decide — the person who
+        decides what an agent may do is never the person who approves what it
+        proposes, and the build refuses to start if that ever stops being true.
+        A role lacking the permission for an operation gets 403, and the refusal
+        is recorded as a governance.permission_denied event. Not authentication.
       schema:
         type: string
         enum: [configurator, approver, viewer]
@@ -682,7 +692,10 @@ components:
           type: string
           description: >-
             run.started, model.called, tool.called, decision.made,
-            run.completed, run.escalated, run.awaiting_approval, run.failed
+            governance.blocked, run.completed, run.escalated,
+            run.awaiting_approval, run.failed. Outside a run,
+            governance.permission_denied records an operation refused to a role
+            that lacked its permission.
         actor: { type: string, description: system, seed-script, or role:<role> }
         occurred_at: { type: string, format: date-time }
         payload:
@@ -695,7 +708,7 @@ components:
       required: [step_no, kind]
       properties:
         step_no: { type: integer }
-        kind: { type: string, enum: [reason, tool, decision] }
+        kind: { type: string, enum: [reason, tool, decision, governance] }
         model_call:
           type: object
           additionalProperties: true
@@ -717,6 +730,17 @@ components:
             reasoning:
               type: string
               description: Why the action follows from those rules
+            confidence:
+              type: number
+              minimum: 0
+              maximum: 1
+              description: >-
+                How confident the agent is in this decision. Required: R-091
+                makes low confidence a fail-closed condition, and a floor cannot
+                be enforced against a number the agent was free to omit. Below
+                the agent's declared guardrails.min_decision_confidence the
+                runtime overrides the action and escalates, recording a
+                governance step with reason_code low_confidence.
             output:
               type: object
               additionalProperties: true
@@ -727,6 +751,7 @@ components:
                 agent produced none. The governed part of a decision is always
                 the action and its citations; this sits beside them.
         tool_invocation: { $ref: '#/components/schemas/ToolInvocation' }
+        governance: { $ref: '#/components/schemas/GovernanceBlock' }
         created_at: { type: string, format: date-time }
 
     ToolInvocation:
@@ -753,6 +778,63 @@ components:
             tool, missing grant, forbidden tool, invalid arguments, or a config
             the tool cannot honour (FR-C5). Null for an executed or a validated
             (parked) invocation.
+        reason_code:
+          oneOf:
+            - $ref: '#/components/schemas/ReasonCode'
+            - type: 'null'
+          description: >-
+            The governance code the gateway assigned to this refusal, or null
+            when the call executed. The same code appears on the governance step
+            that follows, so the refusal and the stop it caused are one story.
+
+    ReasonCode:
+      type: string
+      description: >-
+        Why the platform stopped, blocked, or refused. Defined once in
+        app/governance.py and used unchanged by the runtime, the audit log, this
+        API, and the UI, so a refusal reads the same everywhere.
+      enum:
+        - tool_unknown
+        - permission_denied
+        - args_invalid
+        - tool_config_invalid
+        - tool_failed
+        - approval_required
+        - no_rule_match
+        - low_confidence
+        - invalid_output
+        - step_limit
+        - timeout
+        - budget_exceeded
+        - daily_budget_exceeded
+        - provider_unavailable
+        - unsupported_definition
+        - agent_decision
+
+    GovernanceBlock:
+      type: object
+      description: >-
+        One platform refusal, present when kind is governance. A stopped run
+        carries exactly one: the platform stops once, and it always says why
+        (FR-C5, FR-G2).
+      required: [reason_code, explanation, terminal_status]
+      properties:
+        reason_code: { $ref: '#/components/schemas/ReasonCode' }
+        explanation:
+          type: string
+          description: >-
+            The plain-language sentence recorded alongside the code, written for
+            a reader who has never seen the codebase. Served rather than left to
+            each client so the words a reviewer reads are the words the platform
+            recorded when it acted.
+        detail:
+          type: [string, 'null']
+          description: >-
+            The specific circumstance — which tool, which ceiling, which value.
+        terminal_status:
+          type: string
+          enum: [escalated, awaiting_approval, error]
+          description: The state the run ended in as a result of this refusal.
 
     Approval:
       type: object

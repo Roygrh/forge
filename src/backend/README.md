@@ -2,11 +2,14 @@
 
 Python 3.12 · FastAPI · SQLAlchemy 2 · PostgreSQL 16 + pgvector ([ADR-002](../../docs/adr/002-backend-python-fastapi.md), [ADR-004](../../docs/adr/004-postgres-single-store.md))
 
-**Phase 4.1 scope:** the accounts-payable domain on top of the Phase 3 skeleton — a
-simulated MeridianERP, the eight AP tools, Meridian's captured rules as **queryable
-data**, and the three agents as declarative DNA. Knowledge retrieval with authority
-ranking (4.3), the HITL approval queue (4.4), and the eval publish gate (4.5) are still
-ahead; where this build cannot honour something, it refuses rather than approximates.
+**Phase 4.2 scope:** governance in depth. The autonomy levels are enforced in one
+place and cannot be bypassed; every way the platform can refuse now has a machine-readable
+reason code, a plain-language explanation, and a recorded governance step in the trace;
+the DNA's hard limits — steps, timeout, per-run tokens and cost, and the **daily** cost
+ceiling — are all enforced; and segregation of duties is a permission matrix the build
+refuses to start without. Knowledge retrieval with authority ranking (4.3), the HITL
+approval queue (4.4), and the eval publish gate (4.5) are still ahead; where this build
+cannot honour something, it refuses rather than approximates.
 
 ## Quickstart (three commands)
 
@@ -15,7 +18,7 @@ From the repository root:
 ```bash
 cd deploy && docker compose up -d --build        # 1. Postgres + API + SPA
 docker compose exec api alembic upgrade head     # 2. schema
-docker compose exec api python -m scripts.seed   # 3. tenant + rules + three agents
+docker compose exec api python -m scripts.seed   # 3. tenant + rules + agents
 ```
 
 Then open <http://localhost:5173> and press **Run** ([`src/frontend`](../frontend/README.md)) —
@@ -29,7 +32,7 @@ AGENT=$(docker compose exec -T db psql -U forge -d forge -tA \
 
 RUN=$(curl -s -X POST http://localhost:8000/api/v1/runs \
   -H 'Content-Type: application/json' -H 'X-Forge-Role: configurator' \
-  -d "{\"agent_id\":\"$AGENT\",\"version\":\"1.0.0\",\"input\":{\"invoice_id\":\"inv-0001\"}}" \
+  -d "{\"agent_id\":\"$AGENT\",\"version\":\"1.1.0\",\"input\":{\"invoice_id\":\"inv-0001\"}}" \
   | python -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
 curl -s "http://localhost:8000/api/v1/runs/$RUN/trace" -H 'X-Forge-Role: configurator'
@@ -41,6 +44,21 @@ trust, R-020 resolved against R-001 by R-090), `inv-0015` (a duplicate invoice n
 blocked under R-040, and `approve_invoice` never called), `inv-0021` (nothing matches:
 escalate under R-091). Every record in `app/erp/seed_data.py` names the eval case it
 exists for.
+
+To watch the platform **refuse** something, run `invoice-validator-restricted` against
+the same `inv-0001`. It is the validator with one line changed — `approve_invoice`
+granted as `forbidden` — so the rules still say auto-approve, the agent still asks, and
+the gateway denies it:
+
+```
+12  TOOL      meridian-erp-approve-invoice@1.0.0  forbidden  -> DENIED [permission_denied]
+13  BLOCKED   permission_denied  (run ends escalated)
+            The agent asked for a tool its own definition does not permit it to use.
+```
+
+And to see segregation of duties bite, send the same request as `-H 'X-Forge-Role:
+approver'`: 403 `permission_denied`, with the attempt recorded as a
+`governance.permission_denied` event.
 
 The run completes with no API key and no network: the seeded agents' DNA names the
 deterministic in-process provider (ADR-005). Point a `model` block at
@@ -89,6 +107,7 @@ Lint, format, and types:
 | `app/db.py` | Async engine for the API, sync engine for migrations/scripts/tests |
 | `app/main.py` | FastAPI app; health probe, CORS for the SPA, and the routers |
 | `app/models/` | The fourteen tables of [`data-model.md`](../../docs/02-architecture/data-model.md) as plain mappings |
+| `app/governance.py` | The governance vocabulary: every reason the platform refuses, its plain-language explanation, and the role/permission matrix that enforces NFR-5 |
 | `app/erp/` | Simulated MeridianERP: vendors, POs, receipts, invoices, and the fact sheet the rules are evaluated against. An external system, not platform state |
 | `app/rules/` | The governed rule set as data: the condition grammar, a general interpreter for it, the seed encoding of the tacit-rules document, and the loader |
 | `app/dna/` | The DNA contract: vendored JSON Schema (write-time) + typed Pydantic view (read-time) |
@@ -97,8 +116,8 @@ Lint, format, and types:
 | `app/runtime/` | The loop ([ADR-003](../../docs/adr/003-custom-agent-runtime.md)), structured-output validation ([ADR-006](../../docs/adr/006-structured-outputs.md)), and the trace writer/reader |
 | `app/api/` | Agent-catalog and run endpoints, the error shape, and the gateway dependencies |
 | `alembic/` | Migration environment; the URL comes from settings, never from `alembic.ini` |
-| `scripts/seed.py` | Idempotent seed: tenant, the governed rule set, and the three published AP agents |
-| `tests/` | Health, config, models, append-only, DNA contract, both gateways, output validation, the rule layer, the AP agents end to end, the catalog, and the runtime |
+| `scripts/seed.py` | Idempotent seed: tenant, the governed rule set, and the published agent definitions |
+| `tests/` | Health, config, models, append-only, DNA contract, both gateways, output validation, the rule layer, **governance** (autonomy matrix, fail-closed matrix, hard limits, SoD), the AP agents end to end, the catalog, and the runtime |
 
 ## Notes for reviewers
 
@@ -158,6 +177,52 @@ Lint, format, and types:
   defaults to the documented dev ports and is set in the compose file next to the
   service it is about. Credentials stay off: the role header is a demonstration of
   segregation of duties, not authentication, and there is no cookie to send.
+- **One enforcement point, proved by reading the source.** A tool handler is invoked in
+  exactly one place — `ToolGateway._execute`. `tests/test_governance.py` parses every
+  module in `app/` and fails if a second call site ever appears, so "nothing bypasses the
+  gateway" is a property of the call graph rather than a rule people remember. The runtime
+  cannot even look a tool up: it holds a gateway, not a registry.
+- **Every refusal has a code, an explanation, and a step in the trace.** The reason codes
+  live once in `app/governance.py` and are used unchanged by the runtime, the audit log,
+  the API, and the SPA. A stopped run carries exactly one `governance` step —
+  `record_governance` is called from a single `except FailClosedError` in
+  `AgentRuntime.start_run`, so a stop that produced no record, or a record with no stop, is
+  not reachable. The explanation travels with the code: the sentence a compliance officer
+  reads is the sentence the platform recorded when it acted.
+- **Autonomy is dispatched from a table, not from a chain of `if`s.** `AUTONOMY_EFFECT`
+  maps each level in the DNA schema to deny / park / execute, and a test asserts the table
+  and the schema's enum are the same set. A level added to the contract without a decision
+  here fails loudly instead of defaulting to "execute" — fail-closed applies to the
+  platform's own gaps too.
+- **`confidence` is a required field, and the floor is per agent.** R-091 makes low
+  confidence a fail-closed condition, and a threshold cannot be enforced against a number
+  the model was free to omit. `guardrails.min_decision_confidence` is declared per
+  definition — the validator sits at 0.85, intake at 0.6 — and a decision below its floor
+  is **overridden**: the run escalates whatever action was proposed, and the trace keeps
+  the decision the agent wanted beside the block that stopped it.
+- **The daily ceiling is summed from the ledger, not held in memory.**
+  `model.max_cost_usd_per_day` is enforced across runs, per *agent*, from committed `runs`
+  rows — so it survives a restart and cannot be reset by publishing a new version. It is
+  checked before the first model call: a run that cannot afford to finish does not start.
+- **Segregation of duties is a matrix the build refuses to start without.**
+  `ROLE_PERMISSIONS` grants permissions to roles, endpoints ask for permissions, and
+  `INCOMPATIBLE_DUTIES` states the pairs no role may hold at once. It is checked at import
+  time and raises `SegregationOfDutiesError` — not an `assert`, which `-O` strips. A
+  control only a test enforces is one that ships broken the day someone skips the test.
+- **An API-level refusal is recorded too.** A role denied `run.start` gets a 403 *and* a
+  `governance.permission_denied` event carrying the tenant and the version it targeted.
+  The permission is deliberately checked after the lookup: a denial that cannot name what
+  it protected is not much of an audit record.
+- **The DNA schema gained a required field, so the agents gained a version.**
+  `guardrails.min_decision_confidence` is required, which makes every 1.0.0 definition
+  invalid — and the runtime refuses to run one (`unsupported_definition`) rather than
+  supplying a default nobody declared. The shipped agents are therefore **1.1.0**, and the
+  1.0.0 rows stay in the database exactly as they were: versions are immutable, and a
+  historical run still resolves the DNA that produced it (FR-A3).
+- **`invoice-validator-restricted` exists to be refused.** It is the validator with
+  `approve_invoice` granted as `forbidden` and nothing else changed. It carries no new
+  capability; it is shipped so that "the platform stops things, and shows you why" is one
+  click away in the catalog rather than a paragraph here.
 - **Publishing in the seed bypasses the eval gate, once and visibly.** The seeded
   versions are published with `published_eval_run_id` left null, so a reviewer can tell a
   seeded version from one that earned its publish. The real gate (409 unless the suite

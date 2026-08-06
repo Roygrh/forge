@@ -36,6 +36,24 @@ NO_RULE_MATCH_RULE = "R-091"
 #: Cited when several rules fired with different actions and one had to win (R-090).
 CONFLICT_RULE = "R-090"
 
+#: What intake cites when it succeeds. There is no governed rule about *normalising* a
+#: document — the AP rule set speaks about invoices, not about reading them — so the one
+#: rule intake actually satisfies is R-092: it produces a complete, structured, cited
+#: record for the next agent. It must never cite R-091 for a clean invoice: R-091 is the
+#: no-rule-match default, and citing it means the fail-closed path fired.
+CITATION_RULE = "R-092"
+
+#: This adapter is deterministic: when a governed rule fired, the answer follows from
+#: data with nothing left to be unsure about, so it says so. It is the *shape* of the
+#: contract that matters here — a real model reports a real confidence, and the runtime
+#: enforces the floor either way (see ``review_decision``).
+CERTAIN = 1.0
+
+#: Reported when the plan could not gather what it needed. Deliberately below every
+#: shipped agent's floor, so the platform escalates on the confidence rule rather than
+#: relying on the adapter to have picked the right action.
+UNCERTAIN = 0.2
+
 #: Nominal usage, so budgets and cost totals are exercised rather than reported as zero.
 _USAGE = Usage(input_tokens=200, output_tokens=100, cost_usd=Decimal("0.0005"))
 
@@ -99,12 +117,17 @@ def _call(name: str, **arguments: object) -> Turn:
 
 
 def _decide(
-    action: str, citations: list[str], reasoning: str, output: dict[str, Any] | None = None
+    action: str,
+    citations: list[str],
+    reasoning: str,
+    output: dict[str, Any] | None = None,
+    confidence: float = CERTAIN,
 ) -> Turn:
     payload: dict[str, Any] = {
         "action": action,
         "citations": citations,
         "reasoning": reasoning,
+        "confidence": confidence,
     }
     if output is not None:
         payload["output"] = output
@@ -130,6 +153,7 @@ def _validate_plan(
             "escalate",
             [NO_RULE_MATCH_RULE],
             "The invoice could not be read, so no rule could be evaluated against it.",
+            confidence=UNCERTAIN,
         )
 
     if "get_vendor" in granted and "get_vendor" not in results:
@@ -150,8 +174,13 @@ def _validate_plan(
 
     # Only an auto_approve entitles the agent to post an approval — and it posts it
     # before deciding, so the decision records an approval that actually happened.
-    entitled = action == "auto_approve" and "approve_invoice" in granted
-    if entitled and "approve_invoice" not in results:
+    #
+    # Note what is *not* checked here: whether the DNA granted the tool. The agent's task
+    # prompt names approve_invoice, so it asks for it whenever the rules say the invoice
+    # may be approved, and the gateway decides whether it may have it. That is the honest
+    # arrangement — least privilege must hold against a model that asks for a tool it was
+    # not given, not only against one polite enough never to try.
+    if action == "auto_approve" and "approve_invoice" not in results:
         return _call(
             "approve_invoice",
             invoice_id=invoice_id,
@@ -231,6 +260,7 @@ def _intake_plan(
             "escalate",
             [NO_RULE_MATCH_RULE],
             "The invoice could not be read, so there is nothing to normalise.",
+            confidence=UNCERTAIN,
         )
 
     normalised = {field: invoice.get(field) for field in _NORMALISED_FIELDS}
@@ -248,11 +278,11 @@ def _intake_plan(
 
     return _decide(
         "auto_approve",
-        [NO_RULE_MATCH_RULE],
+        [CITATION_RULE],
         f"Invoice {invoice['number']} from vendor {invoice['vendor_id']} normalised from "
-        f"{invoice.get('source_document')} with every required field present. R-091 was "
-        "evaluated and did not fire: nothing was ambiguous, so the invoice is admitted "
-        "for validation rather than escalated.",
+        f"{invoice.get('source_document')} with every required field present and nothing "
+        "ambiguous, so it is admitted for validation. No amount was approved: intake has "
+        "no authority to approve payment and no tool with which to do it.",
         output={"normalised_invoice": normalised, "missing_fields": []},
     )
 

@@ -131,6 +131,14 @@ def called_tools(trace: dict[str, Any]) -> list[str]:
     return [call["tool_ref"].split("@")[0] for call in tool_calls(trace)]
 
 
+def governance_in(trace: dict[str, Any]) -> dict[str, Any]:
+    """The one governance step a stopped run carries."""
+    blocks = [step["governance"] for step in trace["steps"] if step["kind"] == "governance"]
+    assert len(blocks) == 1, f"expected exactly one governance step, got {len(blocks)}"
+    found: dict[str, Any] = blocks[0]
+    return found
+
+
 def validate(
     client: TestClient, agents: dict[str, AgentVersion], invoice_id: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -249,6 +257,13 @@ def test_no_rule_match_escalates_and_says_so(
     assert decision["citations"] == ["R-091"]
     assert "No rule" in decision["reasoning"]
 
+    # The platform labels the stop, rather than leaving it as a generic escalation:
+    # citing R-091 *is* the fail-closed default firing, and the trace says so.
+    blocked = governance_in(trace)
+    assert blocked["reason_code"] == "no_rule_match"
+    assert "No governed rule covered this case" in blocked["explanation"]
+    assert trace["events"][-1]["payload"]["reason"] == "no_rule_match"
+
     rules_result = tool_calls(trace)[-1]["result"]
     assert rules_result["applicable_rules"] == []
     assert rules_result["rules_evaluated"] == 22
@@ -284,7 +299,15 @@ def test_a_requires_approval_tool_parks_the_run_without_executing(
     assert calls[0]["args"]["question"] == "Which PO covers this overage?"
 
     # No decision was reached: the agent needed an action it was not allowed to take.
-    assert [step["kind"] for step in trace["steps"]] == ["reason", "tool"]
+    assert [step["kind"] for step in trace["steps"]] == [
+        "reason",
+        "tool",
+        "governance",
+    ]
+    held = trace["steps"][2]["governance"]
+    assert held["reason_code"] == "approval_required"
+    assert held["terminal_status"] == "awaiting_approval"
+    assert "requires a person" in held["explanation"]
     terminal = trace["events"][-1]
     assert terminal["type"] == "run.awaiting_approval"
     assert terminal["payload"]["reason"] == "approval_required"
@@ -361,7 +384,10 @@ def test_the_validator_may_not_schedule_a_payment(
     assert invocation["status"] == "denied"
     assert "forbidden" in invocation["error"]
     assert invocation["result"] is None
-    assert trace["events"][-1]["payload"]["reason"] == "tool_refused"
+    assert invocation["reason_code"] == "permission_denied"
+    blocked = governance_in(trace)
+    assert blocked["reason_code"] == "permission_denied"
+    assert trace["events"][-1]["payload"]["reason"] == "permission_denied"
     assert get_erp().posted_actions() == []
 
 
@@ -425,7 +451,10 @@ def test_the_intake_agent_normalises_an_invoice_and_can_do_nothing_else(
 
     decision = decision_in(trace)
     assert decision["action"] == "auto_approve"
-    assert decision["citations"] == ["R-091"]
+    # R-092, not R-091: a clean invoice is not a no-rule-match, and citing the
+    # fail-closed default for one would make the platform escalate it.
+    assert decision["citations"] == ["R-092"]
+    assert decision["confidence"] == 1.0
 
     normalised = decision["output"]["normalised_invoice"]
     assert normalised["number"] == "INV-4401"
@@ -479,7 +508,12 @@ def test_an_invoice_that_does_not_exist_escalates_without_deciding(
     assert run["status"] == "escalated"
     assert tool_calls(trace)[0]["status"] == "blocked"
     assert "no invoice 'inv-9999'" in tool_calls(trace)[0]["error"]
-    assert [step["kind"] for step in trace["steps"]] == ["reason", "tool"]
+    assert [step["kind"] for step in trace["steps"]] == [
+        "reason",
+        "tool",
+        "governance",
+    ]
+    assert governance_in(trace)["reason_code"] == "tool_failed"
 
 
 def test_the_erp_refuses_a_second_approval_of_the_same_invoice(

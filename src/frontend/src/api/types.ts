@@ -31,7 +31,31 @@ export type RunStatus =
   | 'canceled'
   | 'error'
 
-export type StepKind = 'reason' | 'tool' | 'decision'
+export type StepKind = 'reason' | 'tool' | 'decision' | 'governance'
+
+/**
+ * Why the platform stopped, blocked, or refused — the machine-readable half of a
+ * governance step. Mirrors `GovernanceReason` in `app/governance.py`, which is the one
+ * place these are defined. Kept as a union so a new code shows up as a type error here
+ * rather than as an unstyled string on the screen.
+ */
+export type ReasonCode =
+  | 'tool_unknown'
+  | 'permission_denied'
+  | 'args_invalid'
+  | 'tool_config_invalid'
+  | 'tool_failed'
+  | 'approval_required'
+  | 'no_rule_match'
+  | 'low_confidence'
+  | 'invalid_output'
+  | 'step_limit'
+  | 'timeout'
+  | 'budget_exceeded'
+  | 'daily_budget_exceeded'
+  | 'provider_unavailable'
+  | 'unsupported_definition'
+  | 'agent_decision'
 
 /** What the tool gateway did with a call. `blocked`/`denied` never executed (FR-C5). */
 export type ToolStatus = 'validated' | 'executed' | 'blocked' | 'denied'
@@ -133,6 +157,23 @@ export interface ToolInvocation {
   status: ToolStatus
   /** Why the gateway refused, when status is blocked or denied. Null when it executed. */
   error: string | null
+  /** The governance code the gateway assigned. Null for a call that executed. */
+  reason_code: ReasonCode | null
+}
+
+/**
+ * One platform refusal: the code, the sentence that explains it to a non-technical
+ * reader, and the specific circumstance behind it.
+ *
+ * `explanation` is served by the API rather than written here on purpose — the words a
+ * reviewer reads are the words the platform recorded when it acted, not a second
+ * vocabulary maintained in the UI that could drift from it.
+ */
+export interface GovernanceRecord {
+  reason_code: ReasonCode
+  explanation: string
+  detail: string | null
+  terminal_status: RunStatus
 }
 
 /**
@@ -164,6 +205,11 @@ export interface DecisionRecord {
   citations: string[]
   reasoning: string
   /**
+   * How sure the agent was, 0–1. Required by the decision contract: below the floor the
+   * agent's DNA declares, the runtime overrides the action and escalates (R-091).
+   */
+  confidence: number
+  /**
    * Agent-specific structured result, present only when the agent produced one — the
    * normalised invoice from intake, for example. Optional in the contract and omitted
    * rather than nulled, so a decision that adjudicates carries no empty field.
@@ -177,6 +223,7 @@ export interface RunStep {
   model_call: ModelCall | null
   decision: DecisionRecord | null
   tool_invocation: ToolInvocation | null
+  governance: GovernanceRecord | null
   created_at: string
 }
 

@@ -21,6 +21,7 @@ from app.api.deps import ActorDep
 from app.api.errors import ApiError
 from app.api.schemas import AgentResponse, AgentVersionResponse
 from app.db import SessionDep
+from app.governance import Permission
 from app.models import Agent, AgentVersion
 
 router = APIRouter(tags=["Agents"])
@@ -34,6 +35,7 @@ async def list_agents(session: SessionDep, actor: ActorDep) -> list[AgentRespons
     cursor invented before there is anything to page through is a contract to maintain
     for nothing.
     """
+    actor.require(Permission.READ)
     agents = await session.scalars(select(Agent).order_by(Agent.created_at, Agent.slug))
     return [AgentResponse.of(agent) for agent in agents]
 
@@ -52,6 +54,7 @@ async def list_agent_versions(
     and "there is no such agent" are different answers, and the caller has to be able
     to tell them apart.
     """
+    actor.require(Permission.READ)
     if await session.get(Agent, agent_id) is None:
         raise ApiError(status.HTTP_404_NOT_FOUND, "agent_not_found", f"no agent {agent_id}")
 

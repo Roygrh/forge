@@ -26,9 +26,9 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.governance import GovernanceReason, explain
 from app.llm.contract import Budget, CompletionResult
 from app.models import AgentVersion, Event, Run, RunStep, ToolInvocation
-from app.runtime.errors import EscalationReason
 from app.runtime.output import Decision
 from app.tools.contract import ToolOutcome
 
@@ -42,6 +42,9 @@ from app.tools.contract import ToolOutcome
 _MONEY_SCALE = Decimal("0.000001")
 
 EVENT_RUN_STARTED = "run.started"
+#: Every platform refusal, with its machine-readable reason code. Emitted from one
+#: place in the runtime, so "no silent blocks" is structural rather than a habit.
+EVENT_GOVERNANCE_BLOCKED = "governance.blocked"
 EVENT_MODEL_CALLED = "model.called"
 EVENT_TOOL_CALLED = "tool.called"
 EVENT_DECISION_MADE = "decision.made"
@@ -61,16 +64,39 @@ _TERMINAL_EVENT_FOR_STATUS = {
     "error": EVENT_RUN_FAILED,
 }
 
+#: The four kinds of ordered step a trace can contain. ``governance`` is the platform
+#: speaking rather than the agent: a refusal, with the reason code that caused it.
+StepKind = Literal["reason", "tool", "decision", "governance"]
+
+
 #: Which event types project into ordered trace steps. Everything else is lifecycle:
 #: real, appended, and visible in the trace's ``events``, but not a reasoning step.
-_STEP_KIND_FOR_EVENT: dict[str, Literal["reason", "tool", "decision"]] = {
+_STEP_KIND_FOR_EVENT: dict[str, StepKind] = {
     EVENT_MODEL_CALLED: "reason",
     EVENT_TOOL_CALLED: "tool",
     EVENT_DECISION_MADE: "decision",
+    EVENT_GOVERNANCE_BLOCKED: "governance",
 }
 
 
 # --- Read model ---------------------------------------------------------------
+
+
+class TraceGovernance(BaseModel):
+    """One platform refusal, as the trace viewer shows it.
+
+    ``reason_code`` is the machine-readable code from
+    :class:`~app.governance.GovernanceReason`; ``explanation`` is the sentence that goes
+    with it, written for a reader who has never seen the code. ``detail`` is the specific
+    circumstance — which tool, which ceiling, which number.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    reason_code: str
+    explanation: str
+    detail: str | None = None
+    terminal_status: str
 
 
 class TraceToolInvocation(BaseModel):
@@ -85,18 +111,23 @@ class TraceToolInvocation(BaseModel):
     result: dict[str, Any] | None = None
     status: str
     error: str | None = None
+    #: The governance code the gateway assigned, when this call was refused or parked.
+    #: Null for one that executed. The same code appears on the governance step that
+    #: follows, so a reader can tie the refusal to the stop it caused.
+    reason_code: str | None = None
 
 
 class TraceStep(BaseModel):
-    """One ordered step of a run: a model call, a tool call, or the decision."""
+    """One ordered step of a run: a model call, a tool call, a decision, or a refusal."""
 
     model_config = ConfigDict(frozen=True)
 
     step_no: int
-    kind: Literal["reason", "tool", "decision"]
+    kind: StepKind
     model_call: dict[str, Any] | None = None
     decision: dict[str, Any] | None = None
     tool_invocation: TraceToolInvocation | None = None
+    governance: TraceGovernance | None = None
     created_at: datetime
 
 
@@ -142,6 +173,7 @@ def project_trace(events: list[Event]) -> tuple[list[TraceStep], list[TraceEvent
         tool_invocation = None
         model_call = None
         decision = None
+        governance = None
 
         if kind == "tool":
             tool_invocation = TraceToolInvocation(
@@ -152,9 +184,17 @@ def project_trace(events: list[Event]) -> tuple[list[TraceStep], list[TraceEvent
                 result=payload.get("result"),
                 status=payload["status"],
                 error=payload.get("error"),
+                reason_code=payload.get("reason_code"),
             )
         elif kind == "reason":
             model_call = payload
+        elif kind == "governance":
+            governance = TraceGovernance(
+                reason_code=payload["reason_code"],
+                explanation=payload["explanation"],
+                detail=payload.get("detail"),
+                terminal_status=payload["terminal_status"],
+            )
         else:
             decision = payload
 
@@ -165,6 +205,7 @@ def project_trace(events: list[Event]) -> tuple[list[TraceStep], list[TraceEvent
                 model_call=model_call,
                 decision=decision,
                 tool_invocation=tool_invocation,
+                governance=governance,
                 created_at=event.occurred_at,
             )
         )
@@ -335,9 +376,50 @@ class TraceRecorder:
                     "status": outcome.status,
                     "result": outcome.result,
                     "error": outcome.error,
+                    # Assigned by the gateway, carried verbatim: the audit log names the
+                    # refusal with the same code the enforcement point used.
+                    "reason_code": str(outcome.reason) if outcome.reason else None,
                 },
             )
         )
+        await self._session.commit()
+
+    async def record_governance(
+        self,
+        *,
+        reason: GovernanceReason,
+        detail: str | None,
+        terminal_status: str,
+    ) -> None:
+        """Record that the platform refused to continue, and why.
+
+        Called from exactly one place — the runtime's fail-closed handler — so every
+        stop produces exactly one of these, and none can be produced without a stop.
+        That is what makes "every denial is recorded" true by construction rather than
+        by review (ADR-008, FR-C5).
+        """
+        run = self._require_run()
+        self._step_no += 1
+        payload = {
+            "step_no": self._step_no,
+            "reason_code": str(reason),
+            # The sentence travels with the code so the API, the SPA, and an export all
+            # say the same thing; a code with no explanation is an incident report with
+            # the incident removed.
+            "explanation": explain(reason),
+            "detail": detail,
+            "terminal_status": terminal_status,
+        }
+        self._session.add(
+            RunStep(
+                tenant_id=run.tenant_id,
+                run_id=run.id,
+                step_no=self._step_no,
+                kind="governance",
+                governance=payload,
+            )
+        )
+        self._session.add(self._event(EVENT_GOVERNANCE_BLOCKED, payload))
         await self._session.commit()
 
     async def record_decision(self, decision: Decision) -> None:
@@ -362,7 +444,7 @@ class TraceRecorder:
         *,
         status: str,
         budget: Budget,
-        reason: EscalationReason | None = None,
+        reason: GovernanceReason | None = None,
         detail: str | None = None,
     ) -> Run:
         """Close the run: terminal status, totals, and the matching terminal event."""

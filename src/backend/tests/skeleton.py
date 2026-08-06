@@ -70,6 +70,7 @@ SKELETON_DNA: dict[str, Any] = {
     "guardrails": {
         "max_steps": 4,
         "timeout_seconds": 30,
+        "min_decision_confidence": 0.5,
         "escalate_on_no_rule_match": True,
         "require_citations": True,
     },

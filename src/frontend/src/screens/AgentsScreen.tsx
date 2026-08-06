@@ -42,6 +42,9 @@ const DEMO_INPUT_BY_SLUG: Record<string, Record<string, string>> = {
     invoice_id: 'inv-0005',
     question: 'Which purchase order covers the price difference on this invoice?',
   },
+  // The same invoice as the validator, against a definition that forbids approving it.
+  // Expected to be BLOCKED — that is what it is for.
+  'invoice-validator-restricted': { invoice_id: DEMO_INVOICE_ID },
 }
 
 function demoInputFor(slug: string): Record<string, string> {

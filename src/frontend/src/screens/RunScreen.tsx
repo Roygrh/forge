@@ -10,10 +10,10 @@
 import { useCallback } from 'react'
 
 import { api } from '../api/client'
-import type { Run, RunTrace } from '../api/types'
+import type { GovernanceRecord, Run, RunTrace } from '../api/types'
 import { Empty, ErrorNotice, Loading } from '../components/Feedback'
 import { Mono } from '../components/Json'
-import { RunStatusPill, runStatusMeaning } from '../components/Pill'
+import { ReasonCodePill, RunStatusPill, runStatusMeaning } from '../components/Pill'
 import { RawEventsPanel } from '../components/RawEvents'
 import { Button, PageHeading } from '../components/Shell'
 import { Timeline } from '../components/Timeline'
@@ -57,9 +57,13 @@ export function RunScreen({ runId, onBack }: { runId: string; onBack: () => void
 
 function RunDetail({ view }: { view: RunView }) {
   const { run, trace } = view
+  // A run may carry at most one governance step: the platform stops once.
+  const blocked = trace.steps.find((step) => step.kind === 'governance')?.governance ?? null
 
   return (
     <div className="space-y-6">
+      {blocked !== null && <BlockedBanner block={blocked} />}
+
       <RunSummary run={run} steps={trace.steps.length} />
 
       {trace.steps.length === 0 ? (
@@ -72,6 +76,43 @@ function RunDetail({ view }: { view: RunView }) {
 
       <RawEventsPanel events={trace.events} />
     </div>
+  )
+}
+
+/**
+ * The first thing on the page when the platform stopped a run.
+ *
+ * A blocked run has to be unmistakable from across the room — that is the point of the
+ * whole iteration. Someone who has never seen the API should be able to answer "did
+ * anything happen, and why not?" without scrolling, without opening a disclosure, and
+ * without knowing what a tool gateway is.
+ */
+function BlockedBanner({ block }: { block: GovernanceRecord }) {
+  return (
+    <section
+      role="alert"
+      className="overflow-hidden rounded-lg border-2 border-rose-400 bg-rose-50 shadow-sm"
+    >
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-rose-200 bg-rose-100/70 px-6 py-4">
+        <span aria-hidden="true" className="text-xl leading-none">
+          ⛔
+        </span>
+        <h2 className="text-base font-bold tracking-wide text-rose-900 uppercase">
+          Blocked by the platform
+        </h2>
+        <ReasonCodePill code={block.reason_code} />
+      </div>
+      <div className="space-y-2 px-6 py-4">
+        <p className="text-sm leading-relaxed font-medium text-rose-900">{block.explanation}</p>
+        {block.detail !== null && (
+          <p className="font-mono text-[12px] leading-relaxed text-rose-800">{block.detail}</p>
+        )}
+        <p className="text-xs text-rose-700">
+          The agent did not get what it asked for, and the refusal is recorded below with
+          everything that led to it.
+        </p>
+      </div>
+    </section>
   )
 }
 

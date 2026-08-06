@@ -5,6 +5,11 @@ state. A queue and a worker are a later concern; inline keeps the walking skelet
 deterministic and means the trace is complete the moment the caller has the run id. The
 status code stays ``202`` to match the contract, which is written for the asynchronous
 shape this will grow into.
+
+Starting a run needs ``run.start``; reading needs ``read`` (NFR-5). A refused start is
+**recorded**, not merely refused: the attempt is an audit fact, and an approver quietly
+prevented from starting runs is exactly the kind of thing a compliance review asks about
+months later.
 """
 
 import uuid
@@ -12,15 +17,21 @@ import uuid
 from fastapi import APIRouter, status
 from sqlalchemy import select
 
-from app.api.deps import ActorDep, LlmGatewayDep, ToolGatewayDep
+from app.api.deps import ActorDep, ClockDep, LlmGatewayDep, ToolGatewayDep
 from app.api.errors import ApiError
 from app.api.schemas import RunResponse, RunTraceResponse, StartRun
 from app.db import SessionDep
-from app.models import AgentVersion, Run
+from app.governance import GovernanceReason, Permission, explain
+from app.models import AgentVersion, Event, Run
 from app.runtime.loop import AgentRuntime
 from app.runtime.trace import load_events, project_trace
 
 router = APIRouter(tags=["Runs"])
+
+#: Appended when a caller is refused an operation on a resource that exists. It is not a
+#: run event — no run was started — but it carries the tenant and the version that were
+#: targeted, so "who tried to do what, and was stopped" is answerable from the log.
+EVENT_PERMISSION_DENIED = "governance.permission_denied"
 
 
 @router.post(
@@ -34,6 +45,7 @@ async def start_run(
     session: SessionDep,
     llm_gateway: LlmGatewayDep,
     tool_gateway: ToolGatewayDep,
+    clock: ClockDep,
     actor: ActorDep,
 ) -> RunResponse:
     """Execute one run of a **published** agent version and return it.
@@ -52,6 +64,31 @@ async def start_run(
             "agent_version_not_found",
             f"no version {body.version} for agent {body.agent_id}",
         )
+
+    # Permission is checked *after* the lookup on purpose: only now is the tenant known,
+    # and a denial that cannot name what it protected is not much of an audit record.
+    if not actor.allows(Permission.RUN_START):
+        session.add(
+            Event(
+                tenant_id=agent_version.tenant_id,
+                type=EVENT_PERMISSION_DENIED,
+                actor=actor.identity,
+                agent_version_id=agent_version.id,
+                payload={
+                    "reason_code": str(GovernanceReason.PERMISSION_DENIED),
+                    "explanation": explain(GovernanceReason.PERMISSION_DENIED),
+                    "operation": "run.start",
+                    "role": str(actor.role),
+                    "detail": (
+                        f"role {actor.role} attempted to start a run of "
+                        f"{body.agent_id}@{body.version} without the run.start permission"
+                    ),
+                },
+            )
+        )
+        await session.commit()
+        actor.require(Permission.RUN_START)
+
     if agent_version.status != "published":
         raise ApiError(
             status.HTTP_409_CONFLICT,
@@ -60,12 +97,12 @@ async def start_run(
             {"status": agent_version.status},
         )
 
-    runtime = AgentRuntime(session, llm_gateway=llm_gateway, tool_gateway=tool_gateway)
+    runtime = AgentRuntime(session, llm_gateway=llm_gateway, tool_gateway=tool_gateway, clock=clock)
     run = await runtime.start_run(
         agent_version=agent_version,
         run_input=body.input,
         trigger="api",
-        actor=actor,
+        actor=actor.identity,
     )
     return RunResponse.of(run)
 
@@ -73,13 +110,14 @@ async def start_run(
 @router.get("/runs/{run_id}", response_model=RunResponse, summary="Get run status and summary")
 async def get_run(run_id: uuid.UUID, session: SessionDep, actor: ActorDep) -> RunResponse:
     """Return one run."""
+    actor.require(Permission.READ)
     return RunResponse.of(await _load_run(session, run_id))
 
 
 @router.get(
     "/runs/{run_id}/trace",
     response_model=RunTraceResponse,
-    summary="Get the full run trace (steps, tool calls, decisions)",
+    summary="Get the full run trace (steps, tool calls, decisions, governance blocks)",
 )
 async def get_run_trace(
     run_id: uuid.UUID, session: SessionDep, actor: ActorDep
@@ -88,8 +126,10 @@ async def get_run_trace(
 
     Nothing here reads ``run_steps`` or ``tool_invocations``: the trace is derived from
     the event log alone, so what the viewer shows is what was actually recorded
-    (ADR-008, FR-G1).
+    (ADR-008, FR-G1) — governance refusals included, with the reason code that caused
+    them and the explanation that goes with it.
     """
+    actor.require(Permission.READ)
     run = await _load_run(session, run_id)
     steps, events = project_trace(await load_events(session, run.id))
     return RunTraceResponse(run_id=run.id, steps=steps, events=events)

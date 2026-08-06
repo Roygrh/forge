@@ -140,7 +140,7 @@
     "guardrails": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["max_steps", "timeout_seconds", "escalate_on_no_rule_match", "require_citations"],
+      "required": ["max_steps", "timeout_seconds", "min_decision_confidence", "escalate_on_no_rule_match", "require_citations"],
       "properties": {
         "max_steps": {
           "type": "integer",
@@ -153,6 +153,12 @@
           "minimum": 1,
           "maximum": 3600,
           "description": "Wall-clock limit per run; on timeout the run escalates, it never silently completes."
+        },
+        "min_decision_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence floor for this agent's decisions (R-091). Every decision states a confidence; one below this floor is overridden to an escalation whatever action it proposed. Required, and stated per agent rather than platform-wide: an agent that moves money should not share a threshold with one that drafts an email."
         },
         "escalate_on_no_rule_match": {
           "const": true,

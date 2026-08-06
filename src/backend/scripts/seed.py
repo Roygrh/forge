@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import sync_session
-from app.dna import AP_AGENT_SLUGS, load_agent_dna, validate_dna
+from app.dna import SHIPPED_AGENT_SLUGS, load_agent_dna, validate_dna
 from app.models import Agent, AgentVersion, Event, Rule, Tenant
 from app.rules.catalog import CATALOG, RULESET_VERSION
 
@@ -192,8 +192,12 @@ def seed_agent(session: Session, tenant: Tenant, slug: str) -> tuple[AgentVersio
 
 
 def seed_ap_agents(session: Session, tenant: Tenant) -> dict[str, tuple[AgentVersion, bool]]:
-    """Ensure all three accounts-payable agents are published."""
-    return {slug: seed_agent(session, tenant, slug) for slug in AP_AGENT_SLUGS}
+    """Ensure every shipped agent is published.
+
+    The three accounts-payable agents, plus the governance demonstration version whose
+    definition forbids it to approve anything — see :data:`~app.dna.GOVERNANCE_DEMO_SLUG`.
+    """
+    return {slug: seed_agent(session, tenant, slug) for slug in SHIPPED_AGENT_SLUGS}
 
 
 def main(argv: list[str] | None = None) -> int:

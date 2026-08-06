@@ -8,14 +8,15 @@
  */
 
 import type { ModelCall, RunStep, StepKind, ToolInvocation } from '../api/types'
-import type { DecisionRecord } from '../api/types'
-import { formatCost, formatOffset, formatTokens } from '../lib/format'
+import type { DecisionRecord, GovernanceRecord } from '../api/types'
+import { formatCost, formatOffset, formatTokens, humanize } from '../lib/format'
 import { Disclosure } from './Disclosure'
 import { JsonBlock, Mono } from './Json'
 import {
   AutonomyPill,
   DecisionActionPill,
   Pill,
+  ReasonCodePill,
   ToolStatusPill,
   decisionActionMeaning,
   toolStatusMeaning,
@@ -41,6 +42,12 @@ const KIND_STYLE: Record<StepKind, { label: string; dot: string; icon: string; g
     icon: 'text-emerald-600',
     gloss: 'The agent committed to an action and cited the rules behind it.',
   },
+  governance: {
+    label: 'Blocked',
+    dot: 'bg-rose-600 ring-rose-100',
+    icon: 'text-rose-700',
+    gloss: 'The platform refused to go further, and recorded why.',
+  },
 }
 
 export function Timeline({ steps, runStartedAt }: { steps: RunStep[]; runStartedAt: string }) {
@@ -57,6 +64,9 @@ export function Timeline({ steps, runStartedAt }: { steps: RunStep[]; runStarted
 
 function TimelineStep({ step, runStartedAt }: { step: RunStep; runStartedAt: string }) {
   const style = KIND_STYLE[step.kind]
+  // A refusal is the one step that must not read as one more row in a list: it is the
+  // moment the platform stopped the agent, and the card says so before anything else.
+  const blocked = step.kind === 'governance'
 
   return (
     <li className="relative pl-10">
@@ -64,14 +74,36 @@ function TimelineStep({ step, runStartedAt }: { step: RunStep; runStartedAt: str
         aria-hidden="true"
         className={`absolute top-4 left-[7px] h-3.5 w-3.5 rounded-full ring-4 ${style.dot}`}
       />
-      <article className="rounded-lg border border-slate-200 bg-white shadow-xs">
-        <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-slate-100 px-5 py-3">
-          <span className="text-xs font-semibold tracking-wide text-slate-400">
+      <article
+        className={
+          blocked
+            ? 'rounded-lg border-2 border-rose-400 bg-rose-50/70 shadow-sm'
+            : 'rounded-lg border border-slate-200 bg-white shadow-xs'
+        }
+      >
+        <header
+          className={`flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-5 py-3 ${
+            blocked ? 'border-rose-200' : 'border-slate-100'
+          }`}
+        >
+          <span
+            className={`text-xs font-semibold tracking-wide ${
+              blocked ? 'text-rose-500' : 'text-slate-400'
+            }`}
+          >
             Step {step.step_no}
           </span>
-          <span className={`text-sm font-semibold ${style.icon}`}>{style.label}</span>
-          <span className="hidden text-xs text-slate-500 sm:inline">{style.gloss}</span>
-          <span className="ml-auto font-mono text-xs text-slate-400">
+          <span className={`text-sm font-semibold ${style.icon}`}>
+            {blocked ? '⛔ BLOCKED' : style.label}
+          </span>
+          <span
+            className={`hidden text-xs sm:inline ${blocked ? 'text-rose-700' : 'text-slate-500'}`}
+          >
+            {style.gloss}
+          </span>
+          <span
+            className={`ml-auto font-mono text-xs ${blocked ? 'text-rose-400' : 'text-slate-400'}`}
+          >
             {formatOffset(runStartedAt, step.created_at)}
           </span>
         </header>
@@ -100,7 +132,44 @@ function StepBody({ step }: { step: RunStep }) {
   if (step.kind === 'decision' && step.decision !== null) {
     return <DecisionStep decision={step.decision} />
   }
+  if (step.kind === 'governance' && step.governance !== null) {
+    return <GovernanceStep block={step.governance} />
+  }
   return <p className="text-sm text-slate-500">Recorded with no further detail.</p>
+}
+
+// --- Governance ---------------------------------------------------------------
+
+/**
+ * The platform refusing, rendered so a non-technical reader gets it at a glance.
+ *
+ * Three layers, in the order someone reads them: the reason code (what to quote in a
+ * ticket), the explanation in plain English (what actually happened), and the specific
+ * circumstance (which tool, which ceiling, which number). All three come from the API —
+ * the words on the screen are the words in the audit log.
+ */
+function GovernanceStep({ block }: { block: GovernanceRecord }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <ReasonCodePill code={block.reason_code} />
+        <Pill tone="bad">Run ended {humanize(block.terminal_status)}</Pill>
+      </div>
+
+      <p className="text-sm leading-relaxed font-medium text-rose-900">{block.explanation}</p>
+
+      {block.detail !== null && (
+        <div>
+          <div className="mb-1 text-xs font-medium tracking-wide text-rose-700 uppercase">
+            What triggered it
+          </div>
+          <p className="rounded-md border border-rose-200 bg-white px-3.5 py-2.5 font-mono text-[12px] leading-relaxed text-rose-900">
+            {block.detail}
+          </p>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // --- Reason -------------------------------------------------------------------
@@ -167,6 +236,11 @@ function ToolStep({ invocation }: { invocation: ToolInvocation }) {
         }`}
       >
         <span className="font-medium">Tool gateway:</span> {toolStatusMeaning(invocation.status)}
+        {invocation.reason_code !== null && (
+          <span className="mt-1.5 block">
+            <ReasonCodePill code={invocation.reason_code} />
+          </span>
+        )}
         {invocation.error !== null && (
           <span className="mt-1 block font-mono text-[12px] text-rose-900">{invocation.error}</span>
         )}
@@ -201,6 +275,17 @@ function DecisionStep({ decision }: { decision: DecisionRecord }) {
       <div className="flex flex-wrap items-center gap-2">
         <DecisionActionPill action={decision.action} />
         <span className="text-sm text-slate-600">{decisionActionMeaning(decision.action)}</span>
+        {/*
+          Stated by the agent, enforced by the platform: below the floor this version's
+          DNA declares, the action is overridden and the run escalates (R-091). Shown
+          beside the action because the two only mean something together.
+        */}
+        <Pill
+          tone={decision.confidence >= 0.85 ? 'neutral' : 'warn'}
+          title="How sure the agent said it was. A decision below its DNA's floor is overridden and escalated."
+        >
+          confidence {decision.confidence.toFixed(2)}
+        </Pill>
       </div>
 
       {/*

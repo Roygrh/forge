@@ -6,7 +6,14 @@ from typing import Any
 
 import pytest
 
-from app.dna import AP_AGENT_SLUGS, SCHEMA_PATH, Dna, DnaValidationError, agent_path, validate_dna
+from app.dna import (
+    SCHEMA_PATH,
+    SHIPPED_AGENT_SLUGS,
+    Dna,
+    DnaValidationError,
+    agent_path,
+    validate_dna,
+)
 from tests.skeleton import SKELETON_DNA
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -24,7 +31,7 @@ def test_vendored_schema_matches_the_docs_original() -> None:
     assert SCHEMA_PATH.read_bytes() == DOCS_SCHEMA.read_bytes()
 
 
-@pytest.mark.parametrize("slug", AP_AGENT_SLUGS)
+@pytest.mark.parametrize("slug", SHIPPED_AGENT_SLUGS)
 def test_vendored_agent_definitions_match_the_docs_originals(slug: str) -> None:
     """Same arrangement, same guarantee, for the three shipped agent definitions."""
     assert agent_path(slug).read_bytes() == (DOCS_AGENTS / f"{slug}.agent.json").read_bytes()
@@ -45,7 +52,7 @@ def test_skeleton_dna_is_valid_and_parses() -> None:
     assert dna.guardrails.escalate_on_no_rule_match is True
 
 
-@pytest.mark.parametrize("slug", AP_AGENT_SLUGS)
+@pytest.mark.parametrize("slug", SHIPPED_AGENT_SLUGS)
 def test_every_shipped_agent_validates_and_parses(slug: str) -> None:
     """A definition the platform ships is one both views admit — no exceptions."""
     document = json.loads((DOCS_AGENTS / f"{slug}.agent.json").read_text(encoding="utf-8"))

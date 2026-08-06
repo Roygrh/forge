@@ -1,6 +1,6 @@
 """The agent runtime (ADR-003): the loop, its output contract, and its trace."""
 
-from app.runtime.errors import EscalationReason, FailClosedError
+from app.runtime.errors import FailClosedError, GovernanceReason
 from app.runtime.loop import AgentRuntime
 from app.runtime.output import (
     DECISION_SCHEMA,
@@ -16,8 +16,8 @@ __all__ = [
     "MAX_OUTPUT_RETRIES",
     "AgentRuntime",
     "Decision",
-    "EscalationReason",
     "FailClosedError",
+    "GovernanceReason",
     "OutputValidationError",
     "TraceEvent",
     "TraceRecorder",

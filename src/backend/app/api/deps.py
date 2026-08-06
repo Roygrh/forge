@@ -1,19 +1,29 @@
-"""Shared API dependencies: the gateways, and the demonstration role header.
+"""Shared API dependencies: the gateways, the clock, and the acting role.
 
-The two gateways are dependencies rather than module globals for one reason: a test
+The gateways are dependencies rather than module globals for one reason: a test
 overrides ``get_llm_gateway`` to install a scripted :class:`FakeAdapter` and gets a
 fully deterministic run through the real HTTP surface, with no seam between what the
 test exercises and what the demo runs.
+
+The role header becomes an :class:`Actor` here — a role plus the permissions that role
+holds. Endpoints ask for a **permission**, never for a role, so widening what a role may
+do is a change to one matrix in :mod:`app.governance` and not a change scattered across
+handlers (NFR-5).
 """
 
+from collections.abc import Callable
 from contextlib import suppress
-from typing import Annotated, Literal
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Annotated
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, status
 
+from app.api.errors import ApiError
 from app.config import get_settings
 from app.db import SessionDep
 from app.erp.store import get_erp
+from app.governance import Permission, Role, permissions_for
 from app.llm.adapters.anthropic import AnthropicAdapter
 from app.llm.adapters.base import LlmAdapter
 from app.llm.adapters.demo import MeridianDemoAdapter
@@ -22,8 +32,6 @@ from app.llm.gateway import LlmGateway
 from app.rules.repository import load_rule_set
 from app.tools.gateway import ToolGateway
 from app.tools.registry import ToolRegistry, build_tools
-
-Role = Literal["configurator", "approver", "viewer"]
 
 
 def get_llm_gateway() -> LlmGateway:
@@ -60,6 +68,55 @@ async def get_tool_gateway(session: SessionDep) -> ToolGateway:
     return ToolGateway(ToolRegistry(build_tools(erp=get_erp(), rule_set=rule_set)))
 
 
+def get_clock() -> Callable[[], datetime]:
+    """The clock the runtime measures ``guardrails.timeout_seconds`` against.
+
+    A dependency, not ``datetime.now`` inline, so the wall-clock guardrail can be tested
+    at the HTTP boundary like every other limit — a governance control that can only be
+    verified by waiting for it is a control nobody verifies.
+    """
+    return lambda: datetime.now(UTC)
+
+
+# --- Who is acting, and what they may do (NFR-5) ------------------------------
+
+
+@dataclass(frozen=True)
+class Actor:
+    """The identity a request acts under, and the permissions it carries.
+
+    Not authentication: the role arrives in a header and is trusted. What *is* real is
+    the mapping from role to permission and the refusal that follows from it — the
+    demonstration is of segregation of duties, which is a matrix question, not a
+    credentials question.
+    """
+
+    role: Role
+
+    @property
+    def identity(self) -> str:
+        """How this actor is recorded in the audit log."""
+        return f"role:{self.role}"
+
+    def allows(self, permission: Permission) -> bool:
+        """Whether this actor holds ``permission``."""
+        return permission in permissions_for(self.role)
+
+    def require(self, permission: Permission) -> None:
+        """Raise 403 unless this actor holds ``permission``."""
+        if not self.allows(permission):
+            raise ApiError(
+                status.HTTP_403_FORBIDDEN,
+                "permission_denied",
+                f"role {self.role} may not {permission}",
+                {
+                    "role": str(self.role),
+                    "required_permission": str(permission),
+                    "held_permissions": sorted(str(held) for held in permissions_for(self.role)),
+                },
+            )
+
+
 def require_role(
     x_forge_role: Annotated[
         Role,
@@ -69,16 +126,17 @@ def require_role(
             )
         ),
     ],
-) -> str:
-    """Validate the demonstration role header and return it as the acting identity.
+) -> Actor:
+    """Resolve the demonstration role header into the acting identity.
 
-    Phase 3.2 checks only that the header names a known role, and records it as the
-    event actor. Per-operation permission enforcement (the 403s in openapi.yaml) lands
-    with the approval and publish endpoints, where there is something to segregate.
+    An unknown role is a 422 from FastAPI's own validation before this runs: the header
+    is an enum in the contract, so "some other role" is not a thing the platform has to
+    have an opinion about.
     """
-    return f"role:{x_forge_role}"
+    return Actor(role=x_forge_role)
 
 
 LlmGatewayDep = Annotated[LlmGateway, Depends(get_llm_gateway)]
 ToolGatewayDep = Annotated[ToolGateway, Depends(get_tool_gateway)]
-ActorDep = Annotated[str, Depends(require_role)]
+ClockDep = Annotated[Callable[[], datetime], Depends(get_clock)]
+ActorDep = Annotated[Actor, Depends(require_role)]

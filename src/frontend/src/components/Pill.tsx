@@ -6,7 +6,14 @@
  * makes this file fail to compile rather than quietly rendering it grey.
  */
 
-import type { Autonomy, DecisionAction, RunStatus, ToolStatus, VersionStatus } from '../api/types'
+import type {
+  Autonomy,
+  DecisionAction,
+  ReasonCode,
+  RunStatus,
+  ToolStatus,
+  VersionStatus,
+} from '../api/types'
 import { humanize } from '../lib/format'
 
 export type Tone = 'neutral' | 'accent' | 'good' | 'warn' | 'bad' | 'info'
@@ -151,4 +158,23 @@ const VERSION_STATUS_TONE: Record<VersionStatus, Tone> = {
 
 export function VersionStatusPill({ status }: { status: VersionStatus }) {
   return <Pill tone={VERSION_STATUS_TONE[status]}>{humanize(status)}</Pill>
+}
+
+/**
+ * Governance reason codes, shown as the code itself.
+ *
+ * Deliberately *not* prettified into sentence case: the code is what appears in the
+ * audit log, in the API, and in a support conversation, so the screen shows the same
+ * token rather than a friendly synonym nobody can search for. The sentence beside it
+ * comes from the API.
+ */
+export function ReasonCodePill({ code }: { code: ReasonCode }) {
+  return (
+    <span
+      title="Machine-readable reason code, as recorded in the audit log"
+      className="rounded bg-white px-2 py-0.5 font-mono text-[12px] font-semibold text-rose-800 ring-1 ring-rose-300 ring-inset"
+    >
+      {code}
+    </span>
+  )
 }
