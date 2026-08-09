@@ -1,19 +1,22 @@
-"""Seed the demonstration tenant, the governed rule set, and the three AP agents.
+"""Seed the demonstration tenant, rules, governed knowledge, and the AP agents.
 
 Idempotent: running it twice leaves exactly one Meridian Supply Co. tenant, one row per
-rule, one published version of each agent, and one event apiece. Re-running is the
-normal case (fresh clone, restarted volume, CI), so it must never be destructive and
-never duplicate.
+rule, one chunk set per knowledge collection, one published version of each agent, and
+one event apiece. Re-running is the normal case (fresh clone, restarted volume, CI), so
+it must never be destructive and never duplicate.
 
 **Existing rules are left alone.** A rule row is the AP Manager's, not the seed's: once
 it exists, an operator may have edited it — that is the entire point of rules being data
 (:mod:`app.rules`) — and a re-seed that quietly reverted her change would make the
 mechanism a lie. Pass ``--refresh-rules`` to deliberately restore the shipped catalogue.
+Knowledge chunks follow the same convention: collections that already hold chunks are
+left alone unless ``--refresh-knowledge`` deliberately rebuilds them (which is also how
+a changed embedding provider re-embeds the corpus).
 
 Usage (from src/backend, with DATABASE_URL set or the compose default reachable):
 
     python -m scripts.seed
-    python -m scripts.seed --refresh-rules
+    python -m scripts.seed --refresh-rules --refresh-knowledge
 """
 
 import argparse
@@ -26,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.db import sync_session
 from app.dna import SHIPPED_AGENT_SLUGS, load_agent_dna, validate_dna
+from app.knowledge import ingest_knowledge
 from app.models import Agent, AgentVersion, Event, Rule, Tenant
 from app.rules.catalog import CATALOG, RULESET_VERSION
 
@@ -110,6 +114,17 @@ def seed_rules(session: Session, tenant: Tenant, *, refresh: bool = False) -> tu
             )
         )
     return written, len(CATALOG) - written
+
+
+def seed_knowledge(session: Session, tenant: Tenant, *, refresh: bool = False) -> tuple[int, int]:
+    """Ingest the governed knowledge: SME rules + the two policy documents (FR-D1).
+
+    Runs after :func:`seed_rules` because the SME collection is built from the
+    ``rules`` table — what is ingested is what is in force, edits included. The policy
+    documents are deliberately contradictory (see :mod:`app.knowledge.documents`);
+    seeding them intact is the point.
+    """
+    return ingest_knowledge(session, tenant, refresh=refresh)
 
 
 def seed_agent(session: Session, tenant: Tenant, slug: str) -> tuple[AgentVersion, bool]:
@@ -208,11 +223,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Overwrite existing rule rows with the shipped catalogue (discards edits).",
     )
+    parser.add_argument(
+        "--refresh-knowledge",
+        action="store_true",
+        help="Rebuild every knowledge collection's chunks (re-chunks and re-embeds).",
+    )
     args = parser.parse_args(argv)
 
     with sync_session() as session:
         tenant, tenant_created = seed_tenant(session)
         written, left_alone = seed_rules(session, tenant, refresh=args.refresh_rules)
+        # Rules first: the SME knowledge collection is built from the rules table.
+        session.flush()
+        chunks_written, chunks_left = seed_knowledge(
+            session, tenant, refresh=args.refresh_knowledge
+        )
         agents = seed_ap_agents(session, tenant)
         session.commit()
 
@@ -222,6 +247,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(
             f"rules v{RULESET_VERSION}: {written} written, {left_alone} already present "
+            f"and left alone"
+        )
+        print(
+            f"knowledge: {chunks_written} chunks written, {chunks_left} already present "
             f"and left alone"
         )
         for slug, (version, created) in agents.items():

@@ -69,6 +69,12 @@ class ToolContract:
     #: Validates the ``config`` object a DNA grant may attach. ``None`` means this tool
     #: takes no configuration, and a grant that supplies some is a definition error.
     config_schema: dict[str, Any] | None = None
+    #: A tool that declares this consumes the DNA's ``knowledge`` block: the gateway
+    #: injects the published collection scope and tenant into its config under
+    #: ``knowledge_scope`` (see :meth:`ToolGateway.invoke`). The scope therefore comes
+    #: from the *published definition*, never from arguments the model chose — the model
+    #: cannot widen what its agent may read (FR-C3 applied to knowledge).
+    knowledge_scoped: bool = False
 
 
 @dataclass(frozen=True)

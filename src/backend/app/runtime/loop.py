@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dna.model import Dna
 from app.governance import GovernanceReason
+from app.knowledge.retrieval import unresolved_conflicts
 from app.llm.contract import (
     AdapterError,
     Budget,
@@ -66,13 +67,15 @@ RUNTIME_PROTOCOL = (
     "You are executing inside the Forge runtime. On each turn, do exactly one of:\n"
     "  (a) call one of the tools you have been granted, or\n"
     "  (b) return your final decision as a JSON object with the fields "
-    f"action (one of {', '.join(DECISION_ACTIONS)}), citations (a non-empty list of "
-    "rule IDs such as R-001), reasoning, and confidence (a number from 0 to 1).\n"
-    "Every decision must cite the rule IDs it applied. If no rule matches, or your "
-    "confidence is low, decide escalate and say that no rule matched — never guess. "
-    "State your confidence honestly: a decision below this agent's declared floor is "
-    "escalated to a human whatever action you proposed, and a confidently wrong answer "
-    "is the one failure a reviewer cannot catch."
+    f"action (one of {', '.join(DECISION_ACTIONS)}), citations (a non-empty list), "
+    "reasoning, and confidence (a number from 0 to 1).\n"
+    "Every decision must cite what it applied: rule IDs such as R-001, and — for any "
+    "claim drawn from retrieved knowledge — the document citation the retrieval "
+    "returned (document#section, e.g. AP-Policy-2023.pdf#approval-thresholds). If no "
+    "rule matches, or your confidence is low, decide escalate and say that no rule "
+    "matched — never guess. State your confidence honestly: a decision below this "
+    "agent's declared floor is escalated to a human whatever action you proposed, and "
+    "a confidently wrong answer is the one failure a reviewer cannot catch."
 )
 
 
@@ -251,6 +254,21 @@ class AgentRuntime:
                     outcome.error or f"tool {outcome.tool_name!r} did not execute",
                 )
 
+            contested = unresolved_conflicts(outcome.result or {})
+            if contested:
+                # Retrieval surfaced sources of equal authority that contradict each
+                # other. R-090 has no winner to give, so nothing may choose — not the
+                # model on its next turn, not the platform here. The contested sources
+                # are already recorded in the tool step above, side by side with their
+                # dates; the run stops for a human (R-091, FR-D2).
+                raise FailClosedError(
+                    GovernanceReason.KNOWLEDGE_CONFLICT,
+                    "knowledge retrieval surfaced contradictory sources of equal "
+                    f"authority on topic(s): {', '.join(contested)}; the authority "
+                    "hierarchy cannot resolve them, so both are surfaced and the case "
+                    "goes to a human (R-090/R-091)",
+                )
+
             messages.append(
                 Message(
                     role="assistant",
@@ -356,21 +374,16 @@ def _load_dna(agent_version: AgentVersion) -> Dna:
 def _require_supported(dna: Dna) -> None:
     """Refuse a valid definition this build cannot honestly execute.
 
-    Both blocks below are resolved by layers that do not exist yet (instruction blocks
-    and the knowledge layer, Phase 4.x). Running such an agent anyway would execute a
-    *different* agent from the one that was published — one missing its policy context
-    — and would do so silently. Fail closed instead (golden rule 3).
+    Instruction blocks are resolved by a layer that does not exist yet (Phase 4.x).
+    Running such an agent anyway would execute a *different* agent from the one that
+    was published — one missing its policy context — and would do so silently. Fail
+    closed instead (golden rule 3). Knowledge collections stopped being on this list
+    in Phase 4.3: they are resolved by the knowledge layer, and a collection the store
+    cannot serve is refused at retrieval time with the same doctrine.
     """
     if dna.instructions.system_blocks:
         raise FailClosedError(
             GovernanceReason.UNSUPPORTED_DEFINITION,
             "DNA declares instruction system_blocks "
             f"({', '.join(dna.instructions.system_blocks)}) which this build cannot resolve",
-        )
-    if dna.knowledge.collections:
-        raise FailClosedError(
-            GovernanceReason.UNSUPPORTED_DEFINITION,
-            "DNA declares knowledge collections "
-            f"({', '.join(dna.knowledge.collections)}) but knowledge retrieval is not "
-            "available in this build",
         )

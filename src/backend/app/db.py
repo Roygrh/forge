@@ -73,6 +73,22 @@ def create_sync_engine(url: str | None = None) -> Engine:
     return create_engine(url or get_settings().database_url, pool_pre_ping=True)
 
 
+@lru_cache
+def get_sync_session_factory() -> sessionmaker[Session]:
+    """Process-wide synchronous session factory, for synchronous call sites that live
+    inside the running API — today, tool handlers.
+
+    Tool handlers are synchronous by contract (:mod:`app.tools.contract`) and the
+    knowledge-retrieval tool needs the database. Giving it a session from a cached
+    engine (rather than a throwaway engine per call, as :func:`sync_session` does)
+    keeps a retrieval from paying a connection-pool construction on every invocation.
+    """
+    return sessionmaker(
+        bind=create_engine(get_settings().database_url, pool_pre_ping=True),
+        expire_on_commit=False,
+    )
+
+
 @contextmanager
 def sync_session(url: str | None = None) -> Iterator[Session]:
     """Yield a synchronous session, disposing its engine afterwards."""

@@ -389,6 +389,11 @@ paths:
     get:
       tags: [Knowledge]
       summary: Get a knowledge chunk with its authority level and citation
+      description: >-
+        The verifiability endpoint (FR-D4): a document citation in a decision
+        resolves — via the retrieval step in the run trace — to a chunk id, and
+        this endpoint serves the chunk a human then reads: content, section,
+        owner, effective date, authority level.
       parameters:
         - $ref: '#/components/parameters/RoleHeader'
       responses:
@@ -398,6 +403,25 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/KnowledgeChunk' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /knowledge/remediation:
+    get:
+      tags: [Knowledge]
+      summary: List flagged knowledge conflicts awaiting their owners
+      description: >-
+        Every conflict retrieval has detected, newest first — the stale-document
+        work queue (FR-D5). Written by the platform when sources disagree;
+        read by the knowledge owners who fix the documents.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: Remediation items
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RemediationItem' }
 
   /eval/suites:
     get:
@@ -723,10 +747,17 @@ components:
             citations:
               type: array
               minItems: 1
-              items: { type: string, description: Rule ID, e.g. R-001 }
+              items:
+                type: string
+                description: >-
+                  Rule ID (R-001) or document citation
+                  (AP-Policy-2023.pdf#approval-thresholds)
               description: >-
-                The rule IDs applied. Non-empty by contract (R-092): a decision
-                without citations is rejected by the runtime, not merely logged.
+                What the decision applied, under one citation model (FR-D4):
+                governed rule IDs and, for any claim drawn from retrieved
+                knowledge, the document#section citations retrieval returned.
+                Non-empty by contract (R-092): a decision without citations is
+                rejected by the runtime, not merely logged.
             reasoning:
               type: string
               description: Why the action follows from those rules
@@ -801,6 +832,7 @@ components:
         - tool_failed
         - approval_required
         - no_rule_match
+        - knowledge_conflict
         - low_confidence
         - invalid_output
         - step_limit
@@ -893,18 +925,61 @@ components:
 
     KnowledgeChunk:
       type: object
-      required: [id, tenant_id, collection_id, authority_level, content]
+      required: [id, tenant_id, collection_id, citation, authority_level, content]
       properties:
         id: { type: string, format: uuid }
         tenant_id: { type: string }
         collection_id: { type: string, format: uuid }
-        source_ref: { type: string }
-        section: { type: string }
+        citation:
+          type: string
+          description: >-
+            The citable reference for this chunk — a rule ID (R-020) or an
+            anchored document reference (AP-Policy-2023.pdf#approval-thresholds).
+            The string a decision carries in `citations` (FR-D4); resolving it
+            back to this chunk is what makes a citation verifiable.
+        source_ref:
+          type: [string, 'null']
+          description: Anchored reference to the owning document and section
+        section: { type: [string, 'null'] }
         rule_id: { type: [string, 'null'], description: Citation ID such as R-040 }
         authority_level:
           type: string
           enum: [sme_validated, policy_2023, policy_2019]
+        topic:
+          type: [string, 'null']
+          description: >-
+            Conflict-detection key — the question this chunk answers. Two chunks
+            sharing a topic with different declared_value are a conflict (FR-D2).
+        declared_value:
+          type: [string, 'null']
+          description: The answer this chunk declares for its topic
+        effective_date: { type: [string, 'null'], format: date }
         content: { type: string }
+        created_at: { type: string, format: date-time }
+
+    RemediationItem:
+      type: object
+      description: >-
+        One detected knowledge conflict, flagged to the stale document's owner
+        (FR-D5). A record, not a workflow: retrieval writes it when it finds
+        sources disagreeing; the owner resolves the document. winning_source_ref
+        is null when authority could not resolve the conflict — the run failed
+        closed and every party was flagged.
+      required: [id, tenant_id, topic, stale_source_ref, stale_authority_level, status]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string }
+        topic: { type: string, description: The question the sources disagree on }
+        stale_source_ref: { type: string }
+        stale_authority_level: { type: string }
+        stale_declared_value: { type: [string, 'null'] }
+        winning_source_ref: { type: [string, 'null'] }
+        winning_authority_level: { type: [string, 'null'] }
+        winning_declared_value: { type: [string, 'null'] }
+        owner: { type: [string, 'null'], description: Who owns the stale document }
+        status: { type: string, enum: [open, resolved] }
+        detail: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
 
     EvalSuite:
       type: object

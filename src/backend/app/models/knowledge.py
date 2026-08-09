@@ -1,9 +1,10 @@
-"""Knowledge layer: collections and their retrievable chunks."""
+"""Knowledge layer: collections, their retrievable chunks, and remediation items."""
 
 import uuid
+from datetime import date
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ForeignKey, Index, UniqueConstraint
+from sqlalchemy import Date, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -51,10 +52,63 @@ class KnowledgeChunk(Base):
     section: Mapped[str | None]
     rule_id: Mapped[str | None] = mapped_column(index=True, comment="R-xxx, nullable")
     authority_level: Mapped[str] = mapped_column(comment="denormalized for ranking")
+    #: What question this chunk answers, when the ingestion pipeline knows. Two chunks
+    #: sharing a ``topic`` with different ``declared_value``s are a detectable conflict
+    #: (FR-D2): same question, different answers — never averaged, always surfaced.
+    topic: Mapped[str | None] = mapped_column(
+        index=True, comment="conflict-detection key: the question this chunk answers"
+    )
+    declared_value: Mapped[str | None] = mapped_column(
+        comment="the answer this chunk declares for its topic, normalised for comparison"
+    )
+    effective_date: Mapped[date | None] = mapped_column(
+        Date(), comment="when this section took effect (FR-D1)"
+    )
     content: Mapped[str]
-    # Dimensionless on purpose: the embedding model is chosen with the knowledge layer
-    # (Phase 4.3), and that choice fixes the dimension and the ANN index together.
-    # Committing to a width now would be a guess baked into the schema.
+    # Dimensionless on purpose: the width is the embedding provider's property
+    # (app/knowledge/embeddings.py), not the schema's. At this corpus size a sequential
+    # scan beats maintaining an ANN index, so nothing forces a fixed dimension.
     embedding: Mapped[list[float] | None] = mapped_column(Vector(), comment="pgvector, semantic")
     lexical_tsv: Mapped[str | None] = mapped_column(TSVECTOR, comment="full-text, lexical")
+    created_at: Mapped[CreatedAt]
+
+
+class RemediationItem(Base):
+    """One detected knowledge conflict, flagged to the stale document's owner (FR-D5).
+
+    A record, not a workflow: the living-product principle is that a contradiction found
+    at retrieval time becomes visible work for the knowledge owner, not a silent
+    resolution. ``winning_source_ref`` is null when authority could not resolve the
+    conflict — both documents are flagged and the run failed closed (R-091).
+    """
+
+    __tablename__ = "remediation_items"
+    __table_args__ = (
+        # One open item per (topic, stale doc, winner) — retrieval runs repeat, the
+        # flag should not. NULLS NOT DISTINCT so unresolved conflicts dedupe too.
+        Index(
+            "uq_remediation_items_conflict",
+            "tenant_id",
+            "topic",
+            "stale_source_ref",
+            "winning_source_ref",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+    id: Mapped[UuidPk]
+    tenant_id: Mapped[TenantFk]
+    topic: Mapped[str] = mapped_column(comment="the question the sources disagree on")
+    stale_source_ref: Mapped[str] = mapped_column(comment="document flagged for remediation")
+    stale_authority_level: Mapped[str]
+    stale_declared_value: Mapped[str | None]
+    winning_source_ref: Mapped[str | None] = mapped_column(
+        comment="the source that governed; null when authority could not resolve"
+    )
+    winning_authority_level: Mapped[str | None]
+    winning_declared_value: Mapped[str | None]
+    owner: Mapped[str | None] = mapped_column(comment="who owns the stale document (FR-D1)")
+    status: Mapped[str] = mapped_column(default="open", comment="open | resolved")
+    detail: Mapped[str | None] = mapped_column(comment="human-readable account of the conflict")
     created_at: Mapped[CreatedAt]

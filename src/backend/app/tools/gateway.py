@@ -152,6 +152,17 @@ class ToolGateway:
                 f"invalid config for {tool.ref!r} in this agent version: {config_error}",
             )
 
+        if tool.knowledge_scoped:
+            # Injected *after* config validation, from the published DNA and never from
+            # the model's arguments: the collections a retrieval may read are part of
+            # the definition that was reviewed and published, so the gateway — the one
+            # enforcement point — is where that scope is applied (FR-C3, FR-D2).
+            config["knowledge_scope"] = {
+                "tenant_slug": dna.identity.tenant_id,
+                "collections": list(dna.knowledge.collections),
+                "authority_policy": dna.knowledge.authority_policy,
+            }
+
         schema_error = _validate(tool.input_schema, arguments)
         if schema_error is not None:
             return self._refuse(

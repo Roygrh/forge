@@ -12,9 +12,9 @@ budget hiding a systematic prompt/schema mismatch a human should see.
 """
 
 import json
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 # The decision vocabulary is platform-level and shared with the rules layer and the
 # adapters, so it lives in a dependency-free module (see app/actions.py) and is
@@ -32,8 +32,10 @@ from app.llm.contract import CompletionResult, Message, ToolCall
 
 __all__ = [
     "ACTION_RESTRICTIVENESS",
+    "CITATION_PATTERN",
     "DECISION_ACTIONS",
     "DECISION_SCHEMA",
+    "DOC_CITATION_PATTERN",
     "MAX_OUTPUT_RETRIES",
     "NO_RULE_MATCH_RULE",
     "RULE_ID_PATTERN",
@@ -58,6 +60,17 @@ NO_RULE_MATCH_RULE = "R-091"
 #: R-xxx, the citation format of the governed rule set (R-001 … R-092).
 RULE_ID_PATTERN = r"^R-\d{3}$"
 
+#: A document citation as retrieval returns it: ``document#section-anchor``, e.g.
+#: ``AP-Policy-2023.pdf#approval-thresholds``. The anchor makes it *verifiable* — it
+#: names a section a human can open, not just a file (FR-D4).
+DOC_CITATION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._/\-]*#[A-Za-z0-9][A-Za-z0-9._\-]*$"
+
+#: One citation model for both kinds (FR-D4): a governed rule ID, or a document
+#: citation from retrieval. ``require_citations`` (R-092) covers both — a decision
+#: that used knowledge without saying which knowledge is as uncited as one that
+#: applied a rule silently.
+CITATION_PATTERN = rf"(?:{RULE_ID_PATTERN[1:-1]})|(?:{DOC_CITATION_PATTERN[1:-1]})"
+
 #: The schema the model is held to for a final decision. ``citations`` has
 #: ``minItems: 1`` because ``guardrails.require_citations`` is const-locked true in the
 #: DNA schema (R-092): a decision without citations is rejected, not merely logged.
@@ -75,8 +88,11 @@ DECISION_SCHEMA: dict[str, Any] = {
         "citations": {
             "type": "array",
             "minItems": 1,
-            "items": {"type": "string", "pattern": RULE_ID_PATTERN},
-            "description": "Rule IDs applied, e.g. R-001. Required (R-092).",
+            "items": {"type": "string", "pattern": f"^(?:{CITATION_PATTERN})$"},
+            "description": (
+                "What was applied: rule IDs (R-001) and/or document citations "
+                "(document#section, as returned by retrieval). Required (R-092, FR-D4)."
+            ),
         },
         "reasoning": {
             "type": "string",
@@ -114,7 +130,13 @@ class Decision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     action: DecisionAction
-    citations: list[str] = Field(min_length=1)
+    #: The per-item pattern is enforced here, not only advertised in the JSON schema:
+    #: ``require_citations`` (R-092) means a citation must *be* a citation — a rule ID
+    #: or a document#section reference — because "sources: various" satisfies a
+    #: non-empty-list check and satisfies nobody.
+    citations: list[Annotated[str, StringConstraints(pattern=f"^(?:{CITATION_PATTERN})$")]] = Field(
+        min_length=1
+    )
     reasoning: str = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
     output: dict[str, Any] | None = None
@@ -235,7 +257,9 @@ def correction_message(error: OutputValidationError) -> Message:
             f"{problems}\n\n"
             "Reply with either a tool call, or a JSON object with exactly these fields: "
             f"action (one of {', '.join(DECISION_ACTIONS)}), citations (a non-empty list "
-            "of rule IDs like R-001), reasoning, and confidence (a number from 0 to 1). "
+            "of rule IDs like R-001 and/or document citations like "
+            "AP-Policy-2023.pdf#approval-thresholds), reasoning, and confidence (a "
+            "number from 0 to 1). "
             "Do not add any other text. "
             "This is the only correction attempt; a second invalid response escalates "
             "the run to a human."

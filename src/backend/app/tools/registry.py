@@ -2,7 +2,8 @@
 
 Tools are registered out of band and read-only through the API — an agent can be
 *granted* a tool, never create one. The catalogue is the eight MeridianERP and
-rule-lookup tools of :mod:`app.tools.meridian` (FR-C4), plus one trivial fact lookup
+rule-lookup tools of :mod:`app.tools.meridian` (FR-C4), the governed knowledge
+retrieval of :mod:`app.tools.knowledge` (FR-D2..D4), plus one trivial fact lookup
 that belongs to the platform rather than to the domain and exists so the runtime can be
 exercised without any business data at all.
 """
@@ -13,6 +14,7 @@ from app.erp.store import ErpStore, get_erp
 from app.rules.catalog import catalog_rule_set
 from app.rules.model import RuleSet
 from app.tools.contract import ToolContract, ToolInput
+from app.tools.knowledge import SEARCH_KNOWLEDGE
 from app.tools.meridian import meridian_tools
 
 GET_FACT_REF = "skeleton-get-fact@1.0.0"
@@ -83,6 +85,9 @@ def build_tools(erp: ErpStore | None = None, rule_set: RuleSet | None = None) ->
     return [
         GET_FACT,
         *meridian_tools(erp or get_erp(), rule_set or catalog_rule_set()),
+        # Not bound to anything here: retrieval owns its own session, and its scope
+        # arrives per call from the DNA via the gateway (knowledge_scoped).
+        SEARCH_KNOWLEDGE,
     ]
 
 

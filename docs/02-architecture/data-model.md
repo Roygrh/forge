@@ -11,6 +11,7 @@ multi-tenant-ready while a single tenant is active. Agent DNA lives as validated
 erDiagram
     tenants ||--o{ agents : owns
     tenants ||--o{ knowledge_collections : owns
+    tenants ||--o{ remediation_items : owns
     tenants ||--o{ rules : owns
     tenants ||--o{ eval_suites : owns
     agents ||--o{ agent_versions : versions
@@ -124,13 +125,31 @@ erDiagram
         uuid id PK
         uuid tenant_id FK
         uuid collection_id FK
-        text source_ref "document or rule id"
+        text source_ref "anchored: document#section, or rule anchor"
         text section
         text rule_id "R-xxx, nullable"
         text authority_level "denormalized for ranking"
+        text topic "conflict key: the question this chunk answers"
+        text declared_value "the answer it declares, comparable"
+        date effective_date "when this section took effect"
         text content
         vector embedding "pgvector, semantic"
         tsvector lexical_tsv "full-text, lexical"
+        timestamptz created_at
+    }
+    remediation_items {
+        uuid id PK
+        uuid tenant_id FK
+        text topic "the question the sources disagree on"
+        text stale_source_ref "document flagged to its owner"
+        text stale_authority_level
+        text stale_declared_value
+        text winning_source_ref "null when authority could not resolve"
+        text winning_authority_level
+        text winning_declared_value
+        text owner "who owns the stale document"
+        text status "open | resolved"
+        text detail
         timestamptz created_at
     }
     eval_suites {
@@ -241,7 +260,22 @@ an `embedding` (pgvector, semantic) and a `lexical_tsv` (Postgres full-text, lex
 Retrieval combines the two — exact terms like vendor names and invoice numbers must hit
 (FR-D3) — and the authority hierarchy (`sme_validated` > `policy_2023` > `policy_2019`)
 orders conflicting sources so they are surfaced, never averaged (FR-D2). `rule_id` lets a
-chunk be cited by ID (R-xxx) to satisfy `require_citations` (R-092, FR-D4).
+chunk be cited by ID (R-xxx) to satisfy `require_citations` (R-092, FR-D4); a document
+chunk is cited by its anchored `source_ref` (`AP-Policy-2023.pdf#approval-thresholds`),
+which resolves back to the chunk a human can open — the same citation model for both.
+The `embedding` column is deliberately dimensionless: the width belongs to the embedding
+provider (`app/knowledge/embeddings.py` — a deterministic, offline hashing embedder by
+default, a learned model by configuration), and at this corpus size retrieval is a
+sequential scan, so no ANN index forces the choice early.
+
+**Conflicts are data, and so is their remediation.** `topic` and `declared_value` are
+the conflict-detection key: two retrieved chunks that share a `topic` but declare
+different values are the same question answered differently. Retrieval resolves the pair
+by authority (R-090) — the loser is *marked superseded, never dropped* — or, when the
+authorities are equal, resolves nothing and the run fails closed (R-091,
+`knowledge_conflict`). Either way the conflict writes a `remediation_items` row flagging
+the stale document to its owner (FR-D5): a record, not a workflow, deduplicated per
+(topic, stale document, winner) so repeated retrievals do not re-flag the same fact.
 
 ## Open questions
 

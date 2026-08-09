@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # and the whole test suite run on the deterministic fake adapter.
     anthropic_api_key: str | None = None
 
+    # The embedding provider behind semantic retrieval (app/knowledge/embeddings.py).
+    # "hashing" is deterministic, offline, and free — the demo needs no key, exactly as
+    # it needs none for the LLM. A learned-embedding provider is registered there and
+    # named here; an unknown name refuses to start retrieval rather than falling back.
+    embedding_provider: str = "hashing"
+
     # The SPA (ADR-007) is served from its own origin — Vite's dev server locally, a
     # separate container in compose (ADR-009) — so the browser needs these allowed
     # explicitly. Defaults cover the documented dev ports and nothing else: a wildcard

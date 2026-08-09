@@ -9,10 +9,13 @@
 
 import type { ModelCall, RunStep, StepKind, ToolInvocation } from '../api/types'
 import type { DecisionRecord, GovernanceRecord } from '../api/types'
+import type { ConflictParty, RetrievalConflict, RetrievalResult, RetrievedChunk } from '../api/types'
+import { isRetrievalResult } from '../api/types'
 import { formatCost, formatOffset, formatTokens, humanize } from '../lib/format'
 import { Disclosure } from './Disclosure'
 import { JsonBlock, Mono } from './Json'
 import {
+  AuthorityPill,
   AutonomyPill,
   DecisionActionPill,
   Pill,
@@ -246,23 +249,221 @@ function ToolStep({ invocation }: { invocation: ToolInvocation }) {
         )}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <JsonBlock label="Arguments" value={invocation.args ?? {}} />
-        {invocation.result === null ? (
-          <div className="min-w-0">
-            <div className="mb-1 text-xs font-medium tracking-wide text-slate-500 uppercase">
-              Result
+      {isRetrievalResult(invocation.result) ? (
+        <RetrievalBody result={invocation.result} args={invocation.args} />
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          <JsonBlock label="Arguments" value={invocation.args ?? {}} />
+          {invocation.result === null ? (
+            <div className="min-w-0">
+              <div className="mb-1 text-xs font-medium tracking-wide text-slate-500 uppercase">
+                Result
+              </div>
+              <p className="rounded-md border border-dashed border-slate-300 px-3 py-2.5 text-sm text-slate-500">
+                {parked
+                  ? 'None — the call is waiting on a human approval.'
+                  : 'None — the call never ran.'}
+              </p>
             </div>
-            <p className="rounded-md border border-dashed border-slate-300 px-3 py-2.5 text-sm text-slate-500">
-              {parked
-                ? 'None — the call is waiting on a human approval.'
-                : 'None — the call never ran.'}
-            </p>
-          </div>
-        ) : (
-          <JsonBlock label="Result" value={invocation.result} />
-        )}
+          ) : (
+            <JsonBlock label="Result" value={invocation.result} />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// --- Knowledge retrieval --------------------------------------------------------
+
+/**
+ * A retrieval step rendered as evidence, not as a JSON dump.
+ *
+ * Order matters: conflicts come **before** the chunk list, because "these sources
+ * disagreed, and this one governed" is the fact a reviewer must not be able to miss
+ * (FR-D2) — a superseded source buried at the bottom of a payload is a silent
+ * resolution with extra steps. The raw result stays available underneath, verbatim.
+ */
+function RetrievalBody({ result, args }: { result: RetrievalResult; args: unknown }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm text-slate-600">
+        <span className="font-medium text-slate-700">Query:</span>
+        <span className="italic">“{result.query}”</span>
       </div>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+        <Mono title="How this retrieval ran">{result.retrieval_mode}</Mono>
+        <span title="The authority scale applied to the results, highest first (R-090)">
+          authority: {result.authority_order.join(' > ')}
+        </span>
+      </div>
+
+      {result.conflicts.map((conflict) => (
+        <ConflictBanner key={conflict.topic} conflict={conflict} />
+      ))}
+
+      <div className="space-y-2">
+        <div className="text-xs font-medium tracking-wide text-slate-500 uppercase">
+          Retrieved sources ({result.chunks.length})
+        </div>
+        {result.chunks.map((chunk) => (
+          <ChunkCard key={chunk.chunk_id} chunk={chunk} />
+        ))}
+      </div>
+
+      <Disclosure summary="Retrieval as recorded" hint="arguments and full result, verbatim">
+        <div className="grid gap-3 md:grid-cols-2">
+          <JsonBlock label="Arguments" value={args ?? {}} />
+          <JsonBlock label="Result" value={result} />
+        </div>
+      </Disclosure>
+    </div>
+  )
+}
+
+/**
+ * The conflict, stated before anything else — with who disagreed, who governed, and
+ * who was superseded. An unresolved conflict (equal authority) renders harder: nothing
+ * won, and the platform fails the run closed rather than letting anyone pick (R-091).
+ */
+function ConflictBanner({ conflict }: { conflict: RetrievalConflict }) {
+  const resolved = conflict.resolved
+  return (
+    <div
+      className={
+        resolved
+          ? 'rounded-lg border-2 border-amber-300 bg-amber-50/80 px-4 py-3'
+          : 'rounded-lg border-2 border-rose-400 bg-rose-50/80 px-4 py-3'
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          className={`text-sm font-bold ${resolved ? 'text-amber-800' : 'text-rose-800'}`}
+        >
+          {resolved ? '⚖ SOURCES DISAGREED' : '⚖ CONFLICT — EQUAL AUTHORITY'}
+        </span>
+        <Mono title="The question the sources answer differently">{conflict.topic}</Mono>
+        <Pill
+          tone={resolved ? 'warn' : 'bad'}
+          title={
+            resolved
+              ? 'Resolved by the authority hierarchy: the higher-authority source governs.'
+              : 'No authority outranks the other, so nothing chose: the run fails closed for a human.'
+          }
+        >
+          {resolved ? `resolved by authority (${conflict.resolution_rule})` : `unresolved — fail closed (${conflict.resolution_rule})`}
+        </Pill>
+      </div>
+
+      <p
+        className={`mt-2 text-sm leading-relaxed ${resolved ? 'text-amber-900' : 'text-rose-900'}`}
+      >
+        {conflict.explanation}
+      </p>
+
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        {conflict.winner !== null && <PartyCard party={conflict.winner} role="governed" />}
+        {conflict.superseded.map((party) => (
+          <PartyCard
+            key={party.citation}
+            party={party}
+            role={resolved ? 'superseded' : 'contested'}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** One side of a conflict: its citation, authority, declared answer, and date. */
+function PartyCard({
+  party,
+  role,
+}: {
+  party: ConflictParty
+  role: 'governed' | 'superseded' | 'contested'
+}) {
+  const frame = {
+    governed: 'border-emerald-300 bg-emerald-50/70',
+    superseded: 'border-slate-300 bg-white opacity-80',
+    contested: 'border-rose-300 bg-white',
+  }[role]
+  const badge = {
+    governed: <Pill tone="good" title="This source wins under the authority hierarchy (R-090)">✓ governed</Pill>,
+    superseded: (
+      <Pill tone="neutral" title="Outranked by a higher authority — kept visible, and flagged to its owner for remediation (FR-D5)">
+        superseded
+      </Pill>
+    ),
+    contested: <Pill tone="bad" title="Equal authority — no source governs">contested</Pill>,
+  }[role]
+
+  return (
+    <div className={`rounded-md border px-3 py-2.5 text-sm ${frame}`}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <CitationBadge citation={party.citation} />
+        <AuthorityPill level={party.authority_level} />
+        {badge}
+      </div>
+      {party.declared_value !== null && (
+        <p className="mt-1.5 text-slate-800">
+          declares: <span className="font-semibold">{party.declared_value}</span>
+        </p>
+      )}
+      <p className="mt-1 text-xs text-slate-500">
+        {party.section !== null && <>{party.section} · </>}
+        {party.effective_date !== null && <>effective {party.effective_date} · </>}
+        {party.owner !== null && <>owner: {party.owner}</>}
+      </p>
+    </div>
+  )
+}
+
+/** One retrieved chunk: citation, authority, standing, and the content on demand. */
+function ChunkCard({ chunk }: { chunk: RetrievedChunk }) {
+  const superseded = chunk.status === 'superseded'
+  const contested = chunk.status === 'contested'
+  return (
+    <div
+      className={`rounded-md border px-3 py-2 ${
+        superseded
+          ? 'border-slate-200 bg-slate-50 opacity-75'
+          : contested
+            ? 'border-rose-200 bg-rose-50/50'
+            : 'border-slate-200 bg-white'
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-1.5">
+        <CitationBadge citation={chunk.citation} />
+        <AuthorityPill level={chunk.authority_level} />
+        {superseded && (
+          <Pill
+            tone="neutral"
+            title="This source lost to a higher authority. It is shown struck through — kept, not dropped — so the disagreement stays visible."
+          >
+            superseded by {chunk.superseded_by}
+          </Pill>
+        )}
+        {contested && (
+          <Pill tone="bad" title="Part of an unresolved equal-authority conflict">
+            contested
+          </Pill>
+        )}
+        <span className="ml-auto text-xs text-slate-400" title="Where each retriever ranked this chunk (lexical / semantic)">
+          rank {chunk.lexical_rank ?? '—'} / {chunk.semantic_rank ?? '—'}
+        </span>
+      </div>
+      <Disclosure
+        summary={<span className={superseded ? 'line-through decoration-slate-400' : ''}>{chunk.section ?? chunk.source_ref}</span>}
+        {...(chunk.effective_date !== null ? { hint: `effective ${chunk.effective_date}` } : {})}
+      >
+        <p className="text-sm leading-relaxed whitespace-pre-line text-slate-700">
+          {chunk.content}
+        </p>
+        <p className="mt-2 text-xs text-slate-500">
+          {chunk.source_ref} · owner: {chunk.owner ?? 'unknown'}
+        </p>
+      </Disclosure>
     </div>
   )
 }
@@ -296,17 +497,11 @@ function DecisionStep({ decision }: { decision: DecisionRecord }) {
       */}
       <div className="rounded-md border border-emerald-200 bg-emerald-50/60 px-3.5 py-3">
         <div className="text-xs font-medium tracking-wide text-emerald-800 uppercase">
-          Rules cited
+          Citations
         </div>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {decision.citations.map((rule) => (
-            <span
-              key={rule}
-              title="Rule ID from the governed rule set"
-              className="rounded bg-white px-2 py-0.5 font-mono text-[12px] font-medium text-emerald-800 ring-1 ring-emerald-200 ring-inset"
-            >
-              {rule}
-            </span>
+          {decision.citations.map((citation) => (
+            <CitationBadge key={citation} citation={citation} />
           ))}
         </div>
       </div>
@@ -335,6 +530,36 @@ function DecisionStep({ decision }: { decision: DecisionRecord }) {
 }
 
 // --- Shared -------------------------------------------------------------------
+
+/** A rule citation is `R-xxx`; anything else is a document citation. */
+const RULE_CITATION = /^R-\d{3}$/
+
+/**
+ * One citation, rendered so a reader can tell a governed rule from a document
+ * section at a glance (FR-D4): rules are the emerald `R-xxx` badges the platform has
+ * always used; document citations carry a § mark and name the exact section a human
+ * can open — that is what makes them verifiable rather than decorative.
+ */
+function CitationBadge({ citation }: { citation: string }) {
+  if (RULE_CITATION.test(citation)) {
+    return (
+      <span
+        title="Rule ID from the governed rule set"
+        className="rounded bg-white px-2 py-0.5 font-mono text-[12px] font-medium text-emerald-800 ring-1 ring-emerald-200 ring-inset"
+      >
+        {citation}
+      </span>
+    )
+  }
+  return (
+    <span
+      title="Document citation — names the exact document section this claim rests on"
+      className="rounded bg-white px-2 py-0.5 font-mono text-[12px] font-medium text-sky-800 ring-1 ring-sky-300 ring-inset"
+    >
+      § {citation}
+    </span>
+  )
+}
 
 function Field({ label, value }: { label: string; value: string }) {
   return (

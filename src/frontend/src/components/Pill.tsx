@@ -161,6 +161,36 @@ export function VersionStatusPill({ status }: { status: VersionStatus }) {
 }
 
 /**
+ * Authority levels of the knowledge hierarchy (FR-D2). The tone encodes the ranking:
+ * the SME-validated tier reads strongest because on conflict it wins (R-090).
+ * `authority_level` arrives as an open string (the scale can grow), so unknown levels
+ * fall back to neutral instead of failing to render audit material.
+ */
+const AUTHORITY_LEVEL_TONE: Record<string, Tone> = {
+  sme_validated: 'accent',
+  policy_2023: 'info',
+  policy_2019: 'neutral',
+}
+
+const AUTHORITY_LEVEL_MEANING: Record<string, string> = {
+  sme_validated:
+    'Highest authority: rules captured from and signed off by the subject-matter expert. Overrides every written policy document on conflict (R-090).',
+  policy_2023: 'The current written policy document. Overrides the 2019 policy on conflict.',
+  policy_2019: 'The outdated written policy document — lowest authority on the scale.',
+}
+
+export function AuthorityPill({ level }: { level: string }) {
+  return (
+    <Pill
+      tone={AUTHORITY_LEVEL_TONE[level] ?? 'neutral'}
+      title={AUTHORITY_LEVEL_MEANING[level] ?? 'Authority level on the knowledge ranking scale'}
+    >
+      {level}
+    </Pill>
+  )
+}
+
+/**
  * Governance reason codes, shown as the code itself.
  *
  * Deliberately *not* prettified into sentence case: the code is what appears in the

@@ -13,8 +13,10 @@ the ``query_rules`` tool result told it. Swap ``"provider": "fake"`` for
 ``"provider": "anthropic"`` in a DNA document and a real model does the same job from the
 same tool results and the same prompt; nothing else changes (ADR-005).
 
-Three plans, chosen by what the agent's DNA granted:
+Four plans, chosen by what the agent's DNA granted and what the run asks:
 
+* a ``question`` input + ``search_knowledge`` -> **policy**: retrieve governed knowledge,
+                                        answer per the authority hierarchy, cite sources.
 * ``query_rules`` granted            -> **validate**: read, contextualise, retrieve rules,
                                         resolve them (R-090/R-091), approve if entitled.
 * ``request_info_from_vendor`` only  -> **communicate**: draft the vendor question.
@@ -91,7 +93,9 @@ class MeridianDemoAdapter(LlmAdapter):
         results = _tool_results(messages)
         run_input = _run_input(messages)
 
-        if "query_rules" in granted:
+        if "question" in run_input and "search_knowledge" in granted:
+            turn = _policy_plan(results, run_input)
+        elif "query_rules" in granted:
             turn = _validate_plan(granted, results, run_input)
         elif "request_info_from_vendor" in granted:
             turn = _communicate_plan(results, run_input)
@@ -242,6 +246,127 @@ def _resolve(rules: dict[str, Any]) -> tuple[str, list[str], str]:
             f"({', '.join(sorted(set(proposed)))}) under R-090"
         )
     return action, citations, reasoning + "."
+
+
+# --- The policy-question plan ---------------------------------------------------
+
+
+def _policy_plan(results: dict[str, dict[str, Any]], run_input: dict[str, Any]) -> Turn:
+    """Answer a policy question from governed knowledge, citing every source used.
+
+    The reasoning a real model performs over the same retrieval payload: answer from
+    the source the authority hierarchy says governs, cite it and the sources it
+    overruled (R-090, R-092), and escalate rather than guess when retrieval returns
+    nothing that answers the question (R-091). It never answers from memory — the only
+    knowledge that exists is what ``search_knowledge`` returned.
+    """
+    knowledge = results.get("search_knowledge")
+    if knowledge is None:
+        return _call("search_knowledge", query=str(run_input["question"]))
+
+    chunks: list[dict[str, Any]] = list(knowledge.get("chunks", []))
+    conflicts: list[dict[str, Any]] = list(knowledge.get("conflicts", []))
+
+    contested = [c for c in conflicts if c.get("resolved") is False]
+    if contested:
+        # Defensive only: the runtime stops the run on an unresolved conflict before
+        # this turn can happen. If it ever does, the honest move is the same — surface
+        # both sides and hand the case to a human, choosing nothing.
+        citations = _conflict_citations(contested[0]) + [CONFLICT_RULE]
+        return _decide(
+            "escalate",
+            citations,
+            "Retrieved sources of equal authority contradict each other "
+            f"({contested[0].get('explanation', 'no explanation')}); neither governs, "
+            "so both are surfaced and a human must decide.",
+        )
+
+    authoritative = [c for c in chunks if c.get("status") == "authoritative"]
+    if not authoritative:
+        return _decide(
+            "escalate",
+            [NO_RULE_MATCH_RULE],
+            "Retrieval returned nothing authoritative for this question, so there is "
+            "no governed source to answer from. Escalating rather than guessing.",
+            confidence=UNCERTAIN,
+        )
+
+    if conflicts:
+        resolved = conflicts[0]
+        winner: dict[str, Any] = resolved.get("winner") or {}
+        topic = str(resolved.get("topic"))
+        corroborating = [
+            c
+            for c in authoritative
+            if c.get("topic") == topic and c.get("citation") != winner.get("citation")
+        ]
+        superseded: list[dict[str, Any]] = list(resolved.get("superseded", []))
+
+        citations = [str(winner.get("citation"))]
+        citations += [str(c["citation"]) for c in corroborating]
+        citations += [str(party["citation"]) for party in superseded]
+        citations.append(CONFLICT_RULE)  # the conflict was resolved by a rule; cite it
+
+        superseded_note = "; ".join(
+            f"{party.get('source_ref')} (effective {party.get('effective_date')}, "
+            f"{party.get('authority_level')}) says {party.get('declared_value')!r} "
+            "and is superseded"
+            for party in superseded
+        )
+        answer = str(winner.get("declared_value"))
+        reasoning = (
+            f"The retrieved sources disagree on {topic!r}: {superseded_note}. "
+            f"The governing answer is {answer!r} per {winner.get('citation')} "
+            f"({winner.get('authority_level')}, effective {winner.get('effective_date')})"
+            + (
+                f", corroborated by {', '.join(str(c['citation']) for c in corroborating)}"
+                if corroborating
+                else ""
+            )
+            + ". Under R-090 the higher-authority source wins; the superseded document "
+            "has been flagged to its owner for remediation. All sources are cited so "
+            "the answer can be verified against each of them."
+        )
+        return _decide(
+            "auto_approve",
+            _dedupe(citations),
+            reasoning,
+            output={
+                "answer": answer,
+                "topic": topic,
+                "governing_source": winner,
+                "superseded_sources": superseded,
+            },
+        )
+
+    # No conflict: every retrieved source agrees, so the best-ranked authoritative
+    # chunk answers, cited so the claim is checkable.
+    top = authoritative[0]
+    return _decide(
+        "auto_approve",
+        _dedupe([str(top["citation"])]),
+        f"Answered from {top['citation']} ({top['authority_level']}, effective "
+        f"{top.get('effective_date')}); the retrieved sources do not disagree. "
+        "No amount was approved: answering a policy question posts nothing.",
+        output={"answer": top.get("declared_value") or top.get("content"), "source": top},
+    )
+
+
+def _conflict_citations(conflict: dict[str, Any]) -> list[str]:
+    """Every party of a conflict, citable."""
+    parties: list[dict[str, Any]] = list(conflict.get("superseded", []))
+    winner = conflict.get("winner")
+    if isinstance(winner, dict):
+        parties.insert(0, winner)
+    return _dedupe([str(party["citation"]) for party in parties])
+
+
+def _dedupe(citations: list[str]) -> list[str]:
+    seen: list[str] = []
+    for citation in citations:
+        if citation not in seen:
+            seen.append(citation)
+    return seen
 
 
 # --- The intake and communication plans ---------------------------------------

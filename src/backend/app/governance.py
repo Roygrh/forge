@@ -60,6 +60,12 @@ class GovernanceReason(StrEnum):
     """No governed rule applied to this case, so the agent escalated under R-091 — the
     fail-closed default. Absence of a rule is never licence to improvise."""
 
+    KNOWLEDGE_CONFLICT = "knowledge_conflict"
+    """Retrieved sources of **equal authority** contradict each other, so the authority
+    hierarchy cannot resolve them (R-090 has no winner to give). Nothing — not the
+    platform, not the model — picks a side: both sources are surfaced in the trace with
+    their dates and the run stops for a human (R-091, FR-D2)."""
+
     LOW_CONFIDENCE = "low_confidence"
     """The decision's stated confidence was below the floor its DNA declares. The action
     is overridden to an escalation whatever the agent proposed (R-091)."""
@@ -134,6 +140,11 @@ REASON_EXPLANATION: dict[GovernanceReason, str] = {
     GovernanceReason.NO_RULE_MATCH: (
         "No governed rule covered this case, so it went to a human. The platform never "
         "improvises when the rulebook is silent."
+    ),
+    GovernanceReason.KNOWLEDGE_CONFLICT: (
+        "Two knowledge sources of equal authority contradict each other, so neither "
+        "one governs. The platform showed both and stopped rather than letting anyone "
+        "quietly pick a side."
     ),
     GovernanceReason.LOW_CONFIDENCE: (
         "The agent was not confident enough in its own answer, so the platform "

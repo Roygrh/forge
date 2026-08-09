@@ -218,9 +218,9 @@ def test_an_ordering_comparison_against_a_non_number_is_an_authoring_error() -> 
 # --- 3. The seeded scenarios resolve as the eval cases expect ------------------
 #
 # One row per case in docs/01-discovery/06-eval-cases.md that is expressible without the
-# knowledge layer. E-19 is a policy-conflict question about documents, so it waits for
-# Phase 4.3. This is the rule layer's own answer — the agent's end-to-end decision on the
-# same invoices is asserted in test_ap_agents.py.
+# knowledge layer. E-19 is a policy-conflict question about documents, so it lives with
+# the knowledge layer in test_knowledge.py. This is the rule layer's own answer — the
+# agent's end-to-end decision on the same invoices is asserted in test_ap_agents.py.
 
 EVAL_SCENARIOS = [
     ("E-01", "inv-0001", "auto_approve", {"R-001", "R-010"}),

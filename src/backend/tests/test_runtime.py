@@ -352,37 +352,48 @@ def test_invalid_tool_arguments_escalate_without_executing(
 # --- Definitions this build cannot honour -------------------------------------
 
 
-def test_a_definition_needing_the_knowledge_layer_refuses_to_run(
+def test_a_definition_naming_an_unknown_knowledge_collection_fails_closed(
     client: TestClient,
     committed_session: Session,
     tenant: Tenant,
     scripted: Callable[..., FakeAdapter],
 ) -> None:
-    """Valid DNA the build cannot honour escalates rather than running a lesser agent."""
+    """A collection the store cannot serve is refused at retrieval, never narrowed.
 
-    def with_knowledge(document: dict[str, Any]) -> None:
-        document["knowledge"]["collections"] = ["meridian-ap-policy-documents@1.0.0"]
+    Until Phase 4.3 a DNA declaring knowledge collections was refused outright
+    (``unsupported_definition``). The knowledge layer exists now, so such a definition
+    runs — but the same doctrine holds one layer down: retrieval scoped to a collection
+    the store does not hold refuses with a recorded reason rather than silently
+    retrieving from a narrower scope than the published definition declares.
+    """
+
+    def with_unknown_collection(document: dict[str, Any]) -> None:
+        document["knowledge"]["collections"] = ["a-collection-nobody-ingested"]
+        document["tools"].append(
+            {"ref": "meridian-knowledge-retrieve@1.0.0", "autonomy": "autonomous"}
+        )
 
     version = publish_skeleton(
-        committed_session, tenant, slug="skeleton-needs-knowledge", mutate=with_knowledge
+        committed_session,
+        tenant,
+        slug="skeleton-unknown-collection",
+        mutate=with_unknown_collection,
     )
-    adapter = scripted(LOOK_UP_FORGE, APPROVE)
+    scripted(tool_turn("search_knowledge", {"query": "approval threshold"}), APPROVE)
 
     run = start_run(client, version)
 
     assert run["status"] == "escalated"
-    assert adapter.calls == []  # refused before any model call was made
 
     trace = get_trace(client, run["id"])
 
-    assert step_kinds(trace) == [(1, "governance")]
-    assert event_types(trace) == [
-        "run.started",
-        "governance.blocked",
-        "run.escalated",
-    ]
-    assert trace["steps"][0]["governance"]["reason_code"] == "unsupported_definition"
-    assert trace["events"][-1]["payload"]["reason"] == "unsupported_definition"
+    assert step_kinds(trace) == [(1, "reason"), (2, "tool"), (3, "governance")]
+    invocation = trace["steps"][1]["tool_invocation"]
+    assert invocation["status"] == "blocked"
+    assert invocation["result"] is None
+    assert "a-collection-nobody-ingested" in invocation["error"]
+    assert trace["steps"][2]["governance"]["reason_code"] == "tool_failed"
+    assert trace["events"][-1]["payload"]["reason"] == "tool_failed"
 
 
 # --- API contract -------------------------------------------------------------

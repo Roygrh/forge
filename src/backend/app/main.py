@@ -1,10 +1,12 @@
 """Forge API — application entry point.
 
 Phase 3.2 completed the walking skeleton: the app starts, talks to PostgreSQL, and
-serves the run surface — start a run, read its status, read its trace. Phase 3.3 adds
-the read-only agent catalog the SPA lists, and CORS so that SPA can reach the API. The
-rest of the governance surface contracted in ``docs/02-architecture/api/openapi.yaml``
-(agent authoring, approvals, knowledge, evals) arrives in later phases.
+serves the run surface — start a run, read its status, read its trace. Phase 3.3 added
+the read-only agent catalog the SPA lists, and CORS so that SPA can reach the API.
+Phase 4.3 adds the read-only knowledge surface: collections, citable chunks, and the
+remediation queue. The rest of the governance surface contracted in
+``docs/02-architecture/api/openapi.yaml`` (agent authoring, approvals, evals) arrives
+in later phases.
 """
 
 import asyncio
@@ -18,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app import __version__
-from app.api import agents_router, install_error_handlers, runs_router
+from app.api import agents_router, install_error_handlers, knowledge_router, runs_router
 from app.config import get_settings
 from app.db import check_database, get_async_engine
 
@@ -77,6 +79,7 @@ app.add_middleware(
 
 app.include_router(agents_router, prefix=settings.api_prefix)
 app.include_router(runs_router, prefix=settings.api_prefix)
+app.include_router(knowledge_router, prefix=settings.api_prefix)
 
 
 @app.get(

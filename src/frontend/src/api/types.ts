@@ -47,6 +47,7 @@ export type ReasonCode =
   | 'tool_failed'
   | 'approval_required'
   | 'no_rule_match'
+  | 'knowledge_conflict'
   | 'low_confidence'
   | 'invalid_output'
   | 'step_limit'
@@ -68,6 +69,86 @@ export type DecisionAction = 'auto_approve' | 'escalate' | 'block_escalate' | 'p
 
 /** An opaque JSON object as the API serves it (event payloads, tool args, results). */
 export type JsonObject = Record<string, unknown>
+
+// --- Knowledge retrieval --------------------------------------------------------
+// The result shape of the `search_knowledge` tool (`app/tools/knowledge.py`). The
+// trace viewer renders it as evidence — sources, authority, conflicts — rather than
+// as an opaque JSON dump, because "these disagreed and this one governed" is the
+// entire point of the retrieval step (FR-D2).
+
+/** The authority scale documents and rules share; highest wins (R-090). */
+export type AuthorityLevel = 'sme_validated' | 'policy_2023' | 'policy_2019'
+
+/** How a retrieved chunk stands after authority-based conflict resolution. */
+export type RetrievedChunkStatus = 'authoritative' | 'superseded' | 'contested'
+
+/** One side of a detected conflict, with everything needed to open the source. */
+export interface ConflictParty {
+  citation: string
+  source_ref: string
+  document: string
+  section: string | null
+  rule_id: string | null
+  authority_level: string
+  declared_value: string | null
+  effective_date: string | null
+  owner: string | null
+}
+
+/** Two or more retrieved sources answering the same question differently (FR-D2). */
+export interface RetrievalConflict {
+  topic: string
+  resolved: boolean
+  /** R-090 when authority resolved it; R-091 when it could not and the run fails closed. */
+  resolution_rule: string
+  winner: ConflictParty | null
+  superseded: ConflictParty[]
+  explanation: string
+}
+
+/** One retrieved chunk as the agent (and this viewer) received it. */
+export interface RetrievedChunk {
+  chunk_id: string
+  citation: string
+  source_ref: string
+  section: string | null
+  rule_id: string | null
+  authority_level: string
+  owner: string | null
+  effective_date: string | null
+  topic: string | null
+  declared_value: string | null
+  content: string
+  status: RetrievedChunkStatus
+  superseded_by: string | null
+  lexical_rank: number | null
+  semantic_rank: number | null
+  score: number
+}
+
+/** The full `search_knowledge` result carried in a tool step of the trace. */
+export interface RetrievalResult {
+  query: string
+  collections: string[]
+  retrieval_mode: string
+  authority_order: string[]
+  chunks: RetrievedChunk[]
+  conflicts: RetrievalConflict[]
+}
+
+/**
+ * Narrow an arbitrary tool result to a retrieval result. Structural, not nominal:
+ * the wire format types tool results as opaque JSON, so the trace viewer recognises
+ * a retrieval by its shape.
+ */
+export function isRetrievalResult(result: JsonObject | null): result is JsonObject & RetrievalResult {
+  return (
+    result !== null &&
+    Array.isArray(result.chunks) &&
+    Array.isArray(result.conflicts) &&
+    Array.isArray(result.authority_order)
+  )
+}
 
 // --- Catalog ------------------------------------------------------------------
 
