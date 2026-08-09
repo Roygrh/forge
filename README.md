@@ -33,7 +33,8 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 | 3 | Walking skeleton (running platform foundation) | ✅ Complete |
 | 4.1 | The accounts-payable domain (ERP, tools, rules as data, three agents) | ✅ Complete |
 | 4.2 | Governance in depth (autonomy, fail-closed, limits, SoD, visible blocks) | ✅ Complete |
-| 4.3–4.6 | Knowledge · HITL · evals · observability | ⬜ Planned |
+| 4.3 | Knowledge (authority-ranked retrieval, conflict resolution, citations) | ✅ Complete |
+| 4.4–4.6 | HITL · evals · observability | ⬜ Planned |
 | 5 | Deployment | ⬜ Planned |
 | 6 | Demo packaging | ⬜ Planned |
 
