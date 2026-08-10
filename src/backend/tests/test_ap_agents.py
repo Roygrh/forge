@@ -278,8 +278,9 @@ def test_a_requires_approval_tool_parks_the_run_without_executing(
 ) -> None:
     """The comms agent's only tool needs a human, so the run stops in waiting.
 
-    Not an escalation and not a completion: ``awaiting_approval`` is the state a queue
-    can be built on, and nothing was sent. Phase 4.4 adds the approval row and the resume.
+    Not an escalation and not a completion: ``awaiting_approval`` is the state the queue
+    is built on, and nothing was sent. What the queue then does with it —  release it,
+    refuse it, or let it expire into a cancellation — is ``tests/test_approvals.py``.
     """
     run = run_agent(
         client,
@@ -299,12 +300,22 @@ def test_a_requires_approval_tool_parks_the_run_without_executing(
     assert calls[0]["args"]["question"] == "Which PO covers this overage?"
 
     # No decision was reached: the agent needed an action it was not allowed to take.
+    # The approval step between the parked call and the block is the queue entry itself —
+    # written in the same breath, so what a person sees and what the run is waiting on
+    # cannot get out of step.
     assert [step["kind"] for step in trace["steps"]] == [
         "reason",
         "tool",
+        "approval",
         "governance",
     ]
-    held = trace["steps"][2]["governance"]
+    parked = trace["steps"][2]["approval"]
+    assert parked["status"] == "pending"
+    assert parked["args"]["question"] == "Which PO covers this overage?"
+    assert parked["decided_by"] is None
+    assert parked["expires_at"]  # a server-side deadline exists from the moment it parks
+
+    held = trace["steps"][3]["governance"]
     assert held["reason_code"] == "approval_required"
     assert held["terminal_status"] == "awaiting_approval"
     assert "requires a person" in held["explanation"]

@@ -249,6 +249,14 @@ paths:
     get:
       tags: [Approvals]
       summary: List approvals (defaults to pending)
+      description: >-
+        The queue as an approver works it, oldest first, each item carrying the
+        proposed action **and the evidence to decide it** (FR-E1) so a decision
+        needs no second tab and no second request. Needs `read`.
+
+        Expiry is applied before the list is built, so nothing returned as
+        pending has already lapsed — and asking for the queue is one of the
+        moments a lapsed approval is canceled.
       parameters:
         - $ref: '#/components/parameters/RoleHeader'
         - name: status
@@ -268,12 +276,41 @@ paths:
                 items: { $ref: '#/components/schemas/Approval' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /approvals/report:
+    get:
+      tags: [Approvals]
+      summary: Autonomy-promotion report — approval rates per action category (read-only)
+      description: >-
+        What the approvers actually did, per agent version and tool — the pair a
+        DNA grant names (FR-E5). Answers Rosa's approval-fatigue risk with
+        evidence: a category with a long run of grants and no rejections is
+        named as a candidate for an autonomy upgrade.
+
+        **Read-only, and there is no endpoint that applies it.** Autonomy is a
+        property of a published DNA document, so raising it means authoring a
+        new version and putting it through the eval gate — never a statistic
+        crossing a line. Needs `read`.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: One row per action category, busiest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AutonomyCandidate' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /approvals/{approvalId}:
     parameters:
       - $ref: '#/components/parameters/ApprovalId'
     get:
       tags: [Approvals]
       summary: Get one approval with its evidence
+      description: >-
+        Needs `read`. Expiry is enforced here too: no path serves a lapsed
+        approval as though it were still live.
       parameters:
         - $ref: '#/components/parameters/RoleHeader'
       responses:
@@ -282,6 +319,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Approval' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /approvals/{approvalId}/approve:
@@ -290,7 +328,18 @@ paths:
     post:
       tags: [Approvals]
       summary: Approve a pending action (resumes the run)
-      description: Requires the approver role. Fails if the approval is not pending.
+      description: >-
+        Releases **exactly this action** — the call the run parked, with the
+        arguments the tool gateway already validated. The request body carries a
+        note and no arguments, so there is no shape of request that approves one
+        action and runs another (FR-E2). The approval is written `granted`
+        before anything executes; the run then continues through the same tool
+        gateway and reaches a terminal state of its own.
+
+        Needs `approval.decide`, which only the approver role holds and which no
+        role holding `agent.configure` may ever hold (NFR-5). A refused attempt
+        is recorded as a `governance.permission_denied` event. Fails with 409 if
+        the approval is not pending — including one whose deadline has passed.
       parameters:
         - $ref: '#/components/parameters/RoleHeader'
       requestBody:
@@ -300,7 +349,7 @@ paths:
             schema: { $ref: '#/components/schemas/Decision' }
       responses:
         '200':
-          description: Approved
+          description: Approved; the run resumed and executed the released action
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Approval' }
@@ -311,6 +360,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+              example:
+                code: approval_not_pending
+                message: >-
+                  approval ... is expired; only a pending approval can be
+                  decided. Its deadline passed and the run was canceled — expiry
+                  never approves, and no operation extends it
 
   /approvals/{approvalId}/reject:
     parameters:
@@ -319,9 +374,15 @@ paths:
       tags: [Approvals]
       summary: Reject a pending action (cancels the run)
       description: >-
-        Requires the approver role. There is deliberately no extend or
-        auto-approve operation — expiry is enforced server-side and always
-        cancels, never approves (FR-E3, fail-closed).
+        Refuses the action and cancels its run; nothing is executed, and the
+        refusal is recorded with the actor, the timestamp, and the optional note
+        (FR-E4). Needs `approval.decide`.
+
+        **These four operations are the whole surface.** There is deliberately
+        no extend, no snooze, no bulk-approve and no auto-approve anywhere in
+        this API: expiry is enforced server-side and always cancels, never
+        approves (FR-E3, fail-closed). The absence is the control, and
+        `tests/test_approvals.py` asserts it against the served contract.
       parameters:
         - $ref: '#/components/parameters/RoleHeader'
       requestBody:
@@ -331,7 +392,7 @@ paths:
             schema: { $ref: '#/components/schemas/Decision' }
       responses:
         '200':
-          description: Rejected
+          description: Rejected; the run was canceled and nothing ran
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Approval' }
@@ -512,8 +573,11 @@ components:
         agent.configure/agent.publish and approval.decide — the person who
         decides what an agent may do is never the person who approves what it
         proposes, and the build refuses to start if that ever stops being true.
-        A role lacking the permission for an operation gets 403, and the refusal
-        is recorded as a governance.permission_denied event. Not authentication.
+        Reading the approval queue needs only read, so an auditor can inspect
+        every decision without being able to make one; approving or rejecting
+        needs approval.decide. A role lacking the permission for an operation
+        gets 403, and the refusal is recorded as a governance.permission_denied
+        event. Not authentication.
       schema:
         type: string
         enum: [configurator, approver, viewer]
@@ -716,8 +780,12 @@ components:
           type: string
           description: >-
             run.started, model.called, tool.called, decision.made,
-            governance.blocked, run.completed, run.escalated,
-            run.awaiting_approval, run.failed. Outside a run,
+            governance.blocked, approval.pending, approval.granted,
+            approval.rejected, approval.expired, run.completed, run.escalated,
+            run.awaiting_approval, run.canceled, run.failed. The approval events
+            carry the deciding actor and the timestamp (FR-E4); approval.expired
+            is recorded against `system`, because expiry is the absence of a
+            decision rather than one. Outside a run,
             governance.permission_denied records an operation refused to a role
             that lacked its permission.
         actor: { type: string, description: system, seed-script, or role:<role> }
@@ -732,7 +800,14 @@ components:
       required: [step_no, kind]
       properties:
         step_no: { type: integer }
-        kind: { type: string, enum: [reason, tool, decision, governance] }
+        kind:
+          type: string
+          enum: [reason, tool, decision, governance, approval]
+          description: >-
+            Who acted at this position in the run. `reason`, `tool` and
+            `decision` are the agent; `governance` is the platform refusing; and
+            `approval` is a **person** — the action the run parked, and the
+            approve / reject / expire that answered it (FR-E4).
         model_call:
           type: object
           additionalProperties: true
@@ -783,7 +858,34 @@ components:
                 the action and its citations; this sits beside them.
         tool_invocation: { $ref: '#/components/schemas/ToolInvocation' }
         governance: { $ref: '#/components/schemas/GovernanceBlock' }
+        approval: { $ref: '#/components/schemas/ApprovalStep' }
         created_at: { type: string, format: date-time }
+
+    ApprovalStep:
+      type: object
+      description: >-
+        One state of one approval, present when kind is `approval`. Carries the
+        action being decided — tool ref and the exact arguments — because that is
+        the scope of the approval, so the log answers "what was authorised"
+        without a join and a later edit to the invocation row could not rewrite
+        what somebody approved.
+      required: [approval_id, status, tool_ref, expires_at]
+      properties:
+        approval_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, granted, rejected, expired] }
+        tool_ref: { type: string }
+        args: { type: object, additionalProperties: true }
+        expires_at: { type: string, format: date-time }
+        decided_by: { type: [string, 'null'] }
+        decided_at: { type: [string, 'null'], format: date-time }
+        note: { type: [string, 'null'] }
+        reason_code:
+          oneOf:
+            - $ref: '#/components/schemas/ReasonCode'
+            - type: 'null'
+          description: >-
+            `approval_rejected` or `approval_expired` when the approval ended the
+            run. Null while pending and on a grant, which ends nothing.
 
     ToolInvocation:
       type: object
@@ -817,6 +919,16 @@ components:
             The governance code the gateway assigned to this refusal, or null
             when the call executed. The same code appears on the governance step
             that follows, so the refusal and the stop it caused are one story.
+        approval_id:
+          type: [string, 'null']
+          format: uuid
+          description: >-
+            Set when this call ran only because a person released it. Null for
+            an autonomous execution — an action a human signed for must never
+            read the same as one the agent took on its own (FR-E4).
+        released_by:
+          type: [string, 'null']
+          description: Who granted the approval that let this call run
 
     ReasonCode:
       type: string
@@ -831,6 +943,8 @@ components:
         - tool_config_invalid
         - tool_failed
         - approval_required
+        - approval_rejected
+        - approval_expired
         - no_rule_match
         - knowledge_conflict
         - low_confidence
@@ -846,9 +960,11 @@ components:
     GovernanceBlock:
       type: object
       description: >-
-        One platform refusal, present when kind is governance. A stopped run
-        carries exactly one: the platform stops once, and it always says why
-        (FR-C5, FR-G2).
+        One platform refusal, present when kind is governance. A run carries one
+        per stop, and it always says why (FR-C5, FR-G2). Normally that is exactly
+        one; a run that paused for a human approval records the refusal that
+        paused it (`approval_required`) and then, if it stops again, the one that
+        ended it — a rejection, an expiry, or whatever the resumed loop hit.
       required: [reason_code, explanation, terminal_status]
       properties:
         reason_code: { $ref: '#/components/schemas/ReasonCode' }
@@ -865,29 +981,169 @@ components:
             The specific circumstance — which tool, which ceiling, which value.
         terminal_status:
           type: string
-          enum: [escalated, awaiting_approval, error]
-          description: The state the run ended in as a result of this refusal.
+          enum: [escalated, awaiting_approval, canceled, error]
+          description: >-
+            The state the run ended in as a result of this refusal.
+            `awaiting_approval` is a pause rather than an ending — the run
+            resumes on a grant; `canceled` is where a rejected or expired
+            approval leaves it, with nothing executed.
 
     Approval:
       type: object
-      required: [id, tenant_id, run_id, status, expires_at]
+      required:
+        - id
+        - tenant_id
+        - run_id
+        - run_status
+        - status
+        - proposed_action
+        - evidence
+        - expires_at
+        - seconds_remaining
       properties:
         id: { type: string, format: uuid }
         tenant_id: { type: string }
         run_id: { type: string, format: uuid }
-        tool_invocation: { $ref: '#/components/schemas/ToolInvocation' }
+        run_status:
+          type: string
+          enum: [running, awaiting_approval, completed, escalated, canceled, error]
+          description: >-
+            State of the run this approval is holding. `awaiting_approval` while
+            pending; after a decision it is whatever the run reached — canceled
+            for a rejection or an expiry, and the loop's own outcome for a grant.
         status: { type: string, enum: [pending, granted, rejected, expired] }
+        proposed_action: { $ref: '#/components/schemas/ProposedAction' }
+        evidence: { $ref: '#/components/schemas/ApprovalEvidence' }
+        why_approval_required:
+          type: string
+          description: >-
+            The plain-language sentence the platform recorded when it parked the
+            action (the `approval_required` explanation). Served rather than
+            written into each client, so the words an approver reads are the
+            words the platform acted on.
         expires_at:
           type: string
           format: date-time
-          description: Server-side deadline; on expiry the approval is canceled, never approved
+          description: >-
+            Server-side deadline, written once when the action was parked from
+            the agent's `guardrails.approval_sla_seconds` (or the platform
+            default). On expiry the run is **canceled**, never approved, and no
+            operation in this API moves this value (FR-E3).
+        seconds_remaining:
+          type: integer
+          description: Whole seconds left before the deadline; 0 once it has passed
         decision: { type: [string, 'null'], enum: [approve, reject, null] }
-        decided_by: { type: [string, 'null'] }
-        decided_at: { type: [string, 'null'], format: date-time }
+        decided_by:
+          type: [string, 'null']
+          description: >-
+            `role:<role>` for a human decision, `system` for an expiry — which is
+            the absence of a decision, so `decision` stays null there.
+        decided_at:
+          type: [string, 'null']
+          format: date-time
+          description: >-
+            When it was decided; for an expiry, the deadline itself — authority
+            lapsed when the clock said so, not when the platform next looked.
         note: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+
+    ProposedAction:
+      type: object
+      description: >-
+        The action the run parked, exactly as the gateway validated it. This *is*
+        the scope of the approval: one tool, one set of arguments. Approving it
+        authorises this and nothing else — not the same tool again, and not the
+        same tool with a different amount (FR-E2).
+      required: [tool_invocation_id, tool_ref, autonomy, status]
+      properties:
+        tool_invocation_id: { type: string, format: uuid }
+        tool_ref: { type: string, description: slug@semver, as granted in the DNA }
+        autonomy: { type: string, enum: [autonomous, requires_approval, forbidden] }
+        args: { type: object, additionalProperties: true }
+        status:
+          type: string
+          description: Always `validated` while pending — checked, and deliberately not run
+
+    ApprovalEvidence:
+      type: object
+      description: >-
+        Everything the agent gathered before it asked for a human, verbatim from
+        the run's append-only log (FR-E1). Served with the queue rather than
+        behind a second request, because the requirement is a decision in under
+        a minute and a round trip per invoice is not that.
+      required: [agent, run_input, observations, rule_ids]
+      properties:
+        agent: { type: string, description: slug@semver of the version that proposed it }
+        agent_description: { type: [string, 'null'] }
+        run_input:
+          type: object
+          additionalProperties: true
+          description: The trigger payload the run started from
+        observations:
+          type: array
+          items: { $ref: '#/components/schemas/ApprovalObservation' }
+        rule_ids:
+          type: array
+          items: { type: string }
+          description: >-
+            Governed rule ids present in what the agent gathered — the rules in
+            play, so "which rule fired" is on the screen rather than inside a
+            payload. A reading of the evidence, not a decision: the agent has not
+            made one. The authoritative citations are the ones a decision carries
+            (R-092).
+
+    ApprovalObservation:
+      type: object
+      description: One tool call the agent executed before it asked for a human
+      required: [tool_invocation_id, tool_ref, tool_name]
+      properties:
+        tool_invocation_id: { type: string, format: uuid }
+        tool_ref: { type: string }
+        tool_name: { type: string }
+        args: { type: object, additionalProperties: true }
+        result: { type: object, additionalProperties: true }
+
+    AutonomyCandidate:
+      type: object
+      description: >-
+        One action category in the autonomy-promotion report (FR-E5): one agent
+        version, one tool. Read-only — nothing in this API applies a promotion.
+      required: [agent, agent_version_id, tool_ref, granted, rejected, expired, candidate]
+      properties:
+        agent: { type: string, description: slug@semver }
+        agent_version_id: { type: string, format: uuid }
+        tool_ref: { type: string }
+        pending: { type: integer }
+        granted: { type: integer }
+        rejected: { type: integer }
+        expired:
+          type: integer
+          description: >-
+            Approvals nobody answered. Each one canceled its run; none of them
+            counts as consent.
+        decided: { type: integer, description: granted + rejected — expiry is not a decision }
+        approval_rate:
+          type: [number, 'null']
+          description: granted / decided; null when nothing has been decided
+        candidate:
+          type: boolean
+          description: >-
+            Enough decisions to mean something, no rejection ever, and a grant
+            rate above the threshold. A suggestion for a reviewer, applied only
+            by publishing a new DNA version through its eval gate.
+        recommendation: { type: string }
+        fatigue_note:
+          type: [string, 'null']
+          description: Set when approvals in this category expired unanswered
 
     Decision:
       type: object
+      additionalProperties: false
+      description: >-
+        The body of approve and reject: a note, and nothing else. There are
+        deliberately **no arguments** here — what is released is the action the
+        run already parked (FR-E2) — and no `extend` field, because no operation
+        anywhere in this API moves a deadline (FR-E3).
       properties:
         note: { type: string, description: Optional reviewer note recorded with the decision }
 

@@ -9,7 +9,7 @@ extending it.
 The write half of the catalog — create agent, create draft version, publish, suspend —
 is deliberately absent. Publishing is eval-gated (FR-F2) and there is no eval runner
 yet; shipping a publish endpoint that could not enforce its gate would be a governance
-hole, not a head start. It arrives with the runner in Phase 4.4.
+hole, not a head start. It arrives with the runner in Phase 4.5.
 """
 
 import uuid

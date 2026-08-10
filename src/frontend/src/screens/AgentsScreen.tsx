@@ -37,7 +37,8 @@ const DEMO_INPUT_BY_SLUG: Record<string, Record<string, string>> = {
   'invoice-intake': { invoice_id: DEMO_INVOICE_ID },
   'invoice-validator': { invoice_id: DEMO_INVOICE_ID },
   // The comms agent asks the vendor something — and its one tool needs a human, so this
-  // run is expected to stop in `awaiting_approval` rather than complete.
+  // run is expected to stop in `awaiting_approval` rather than complete, and to appear
+  // in the Approvals queue. Nothing reaches the vendor until somebody releases it there.
   'invoice-comms': {
     invoice_id: 'inv-0005',
     question: 'Which purchase order covers the price difference on this invoice?',
@@ -229,7 +230,7 @@ function DnaSummary({ version }: { version: AgentVersion }) {
         {version.published_eval_run_id === null && (
           <p
             className="mt-1.5 text-xs text-amber-700"
-            title="scripts/seed.py publishes this version directly so the runtime has something to execute; the real eval gate arrives in Phase 4.4"
+            title="scripts/seed.py publishes this version directly so the runtime has something to execute; the real eval gate arrives in Phase 4.5"
           >
             Published by the seed script — no eval gate evidence.
           </p>

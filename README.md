@@ -21,7 +21,7 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 - **`docs/02-architecture/`** — the C4 model, the behavioral diagrams, the data model, the **agent DNA contract** (`dna-schema.json`), and the API contract (`openapi.yaml`).
 - **`docs/adr/`** — the architecture decision records: each significant choice with its context, alternatives, and trade-offs.
 - **`src/backend/`** — the platform itself (Python 3.12 · FastAPI · SQLAlchemy · PostgreSQL 16 + pgvector). See its own README for how to run it.
-- **`src/frontend/`** — the operations SPA (React 18 · Vite · TypeScript · Tailwind): the agent catalog and the run trace viewer.
+- **`src/frontend/`** — the operations SPA (React 18 · Vite · TypeScript · Tailwind): the agent catalog, the approval queue, and the run trace viewer.
 
 ## Status
 
@@ -34,7 +34,8 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 | 4.1 | The accounts-payable domain (ERP, tools, rules as data, three agents) | ✅ Complete |
 | 4.2 | Governance in depth (autonomy, fail-closed, limits, SoD, visible blocks) | ✅ Complete |
 | 4.3 | Knowledge (authority-ranked retrieval, conflict resolution, citations) | ✅ Complete |
-| 4.4–4.6 | HITL · evals · observability | ⬜ Planned |
+| 4.4 | Human in the loop (approval queue, fail-closed expiry, autonomy report) | ✅ Complete |
+| 4.5–4.6 | Evals · observability | ⬜ Planned |
 | 5 | Deployment | ⬜ Planned |
 | 6 | Demo packaging | ⬜ Planned |
 

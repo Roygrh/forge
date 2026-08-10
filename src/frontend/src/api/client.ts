@@ -13,6 +13,10 @@ import type {
   Agent,
   AgentVersion,
   ApiErrorBody,
+  Approval,
+  ApprovalDecisionRequest,
+  ApprovalStatus,
+  AutonomyCandidate,
   Role,
   Run,
   RunTrace,
@@ -35,15 +39,43 @@ const API_PREFIX = '/api/v1'
  * every event, and no credential is involved. It is displayed in the UI for exactly
  * that reason: a viewer should be able to see which hat the screen is wearing.
  *
- * An unrecognised value falls back to `configurator` rather than being forwarded: the
- * API would reject it, and a misconfigured env var should not read as a broken backend.
+ * It is **switchable at runtime**, from the header, because the separation is the thing
+ * being demonstrated: the configurator who publishes an agent is refused when they try
+ * to approve what it proposes, and seeing that refusal happen is more convincing than
+ * reading that it would. Switching changes only which role name is sent — the server
+ * decides what that role may do, and answers 403 when it may not.
+ *
+ * An unrecognised env value falls back to `configurator` rather than being forwarded:
+ * the API would reject it, and a misconfigured env var should not read as a broken
+ * backend.
  */
-export const ACTING_ROLE: Role = isRole(import.meta.env.VITE_FORGE_ROLE)
+const DEFAULT_ROLE: Role = isRole(import.meta.env.VITE_FORGE_ROLE)
   ? import.meta.env.VITE_FORGE_ROLE
   : 'configurator'
 
+let actingRole: Role = DEFAULT_ROLE
+const roleListeners = new Set<() => void>()
+
 function isRole(value: string | undefined): value is Role {
   return value !== undefined && (ROLES as readonly string[]).includes(value)
+}
+
+/** The role every request is currently sent as. */
+export function getActingRole(): Role {
+  return actingRole
+}
+
+/** Act as a different role from now on, and tell every subscribed screen. */
+export function setActingRole(role: Role): void {
+  if (role === actingRole) return
+  actingRole = role
+  roleListeners.forEach((listener) => listener())
+}
+
+/** Subscribe to role changes — the store half of `useSyncExternalStore`. */
+export function subscribeToRole(listener: () => void): () => void {
+  roleListeners.add(listener)
+  return () => roleListeners.delete(listener)
 }
 
 export class ApiError extends Error {
@@ -79,7 +111,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...init,
       headers: {
         Accept: 'application/json',
-        'X-Forge-Role': ACTING_ROLE,
+        'X-Forge-Role': actingRole,
         ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...init.headers,
       },
@@ -137,6 +169,43 @@ export const api = {
 
   /** The ordered trace, projected from this run's append-only events (ADR-008). */
   getTrace: (runId: string) => request<RunTrace>(`/runs/${encodeURIComponent(runId)}/trace`),
+
+  /**
+   * The approval queue, with the evidence to decide each item (FR-E1).
+   *
+   * The server expires anything past its deadline before answering, so nothing returned
+   * as pending has already lapsed — this SPA never decides that question, and could not:
+   * the browser's clock is not the one the deadline is measured against.
+   */
+  listApprovals: (status: ApprovalStatus = 'pending') =>
+    request<Approval[]>(`/approvals?status=${encodeURIComponent(status)}`),
+
+  getApproval: (approvalId: string) =>
+    request<Approval>(`/approvals/${encodeURIComponent(approvalId)}`),
+
+  /**
+   * Release exactly this action; the run resumes and carries it out.
+   *
+   * The body is a note and nothing else. It carries no arguments on purpose — what runs
+   * is the call the agent parked, with the parameters the gateway already validated
+   * (FR-E2) — and there is deliberately no `extendApproval` beside this one: expiry is
+   * enforced server-side and always cancels (FR-E3).
+   */
+  approve: (approvalId: string, body: ApprovalDecisionRequest = {}) =>
+    request<Approval>(`/approvals/${encodeURIComponent(approvalId)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Refuse the action and cancel its run. Nothing is executed. */
+  reject: (approvalId: string, body: ApprovalDecisionRequest = {}) =>
+    request<Approval>(`/approvals/${encodeURIComponent(approvalId)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Approval rates per action category — read-only, and applied by nothing (FR-E5). */
+  getApprovalReport: () => request<AutonomyCandidate[]>('/approvals/report'),
 }
 
 export const apiBaseUrl = BASE_URL

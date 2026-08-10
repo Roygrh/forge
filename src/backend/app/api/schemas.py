@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.approvals import ApprovalRecord, CategoryStats, why_approval_is_required
 from app.models import (
     Agent,
     AgentVersion,
@@ -138,6 +139,147 @@ class RunTraceResponse(BaseModel):
     run_id: uuid.UUID
     steps: list[TraceStep]
     events: list[TraceEvent]
+
+
+# --- Approvals (FR-E1..E5) ----------------------------------------------------
+
+
+class ProposedAction(BaseModel):
+    """The action a run parked, exactly as the gateway validated it.
+
+    This *is* the scope of the approval: one tool, one set of arguments. Approving it
+    authorises this and nothing else — not the same tool again, not the same tool with a
+    different amount (FR-E2).
+    """
+
+    tool_invocation_id: uuid.UUID
+    tool_ref: str = Field(description="slug@semver, as granted in the version's DNA")
+    autonomy: str
+    args: dict[str, Any] | None = None
+    status: str = Field(description="Always `validated` while pending: checked, and not run")
+
+
+class ApprovalObservation(BaseModel):
+    """One tool call the agent executed before it asked for a human."""
+
+    tool_invocation_id: uuid.UUID
+    tool_ref: str
+    tool_name: str
+    args: dict[str, Any] | None = None
+    result: dict[str, Any] | None = None
+
+
+class ApprovalEvidence(BaseModel):
+    """Everything the agent gathered before it asked (FR-E1).
+
+    Served with the queue rather than behind a second request, because the requirement
+    is a decision in under a minute and a round trip per invoice is not that.
+    """
+
+    agent: str = Field(description="slug@semver of the version that proposed the action")
+    agent_description: str | None = None
+    run_input: dict[str, Any]
+    observations: list[ApprovalObservation]
+    rule_ids: list[str] = Field(
+        description="Governed rule ids present in what the agent gathered — the rules in play"
+    )
+
+
+class ApprovalResponse(BaseModel):
+    """One approval: the proposed action, its evidence, its deadline, and its outcome."""
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    run_id: uuid.UUID
+    run_status: RunStatus
+    status: Literal["pending", "granted", "rejected", "expired"]
+    proposed_action: ProposedAction
+    evidence: ApprovalEvidence
+    why_approval_required: str = Field(
+        description="The sentence the platform recorded when it parked the action"
+    )
+    expires_at: datetime = Field(
+        description="Server-side deadline. On expiry the run is canceled, never approved"
+    )
+    seconds_remaining: int = Field(description="0 once the deadline has passed")
+    decision: Literal["approve", "reject"] | None = None
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+    note: str | None = None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, record: "ApprovalRecord", *, now: datetime) -> "ApprovalResponse":
+        """Project an approval and its evidence onto the API contract."""
+        approval = record.approval
+        return cls(
+            id=approval.id,
+            tenant_id=approval.tenant_id,
+            run_id=approval.run_id,
+            run_status=record.run.status,  # type: ignore[arg-type]  # DB text; enum is contract
+            status=approval.status,  # type: ignore[arg-type]  # DB text; enum is the contract
+            proposed_action=ProposedAction(
+                tool_invocation_id=record.invocation.id,
+                tool_ref=record.invocation.tool_ref,
+                autonomy=record.invocation.autonomy,
+                args=record.invocation.args,
+                status=record.invocation.status,
+            ),
+            evidence=ApprovalEvidence.model_validate(record.evidence.as_json()),
+            why_approval_required=why_approval_is_required(),
+            expires_at=approval.expires_at,
+            seconds_remaining=record.seconds_remaining(now),
+            decision=approval.decision,  # type: ignore[arg-type]  # DB text; enum is contract
+            decided_by=approval.decided_by,
+            decided_at=approval.decided_at,
+            note=approval.note,
+            created_at=approval.created_at,
+        )
+
+
+class ApprovalDecisionRequest(BaseModel):
+    """Body of approve and reject.
+
+    A note and nothing else. **There are deliberately no arguments here**: what is being
+    released is the action the run already parked, with the parameters the gateway
+    already validated, so there is no shape of request that approves one action and runs
+    another (FR-E2). There is likewise no ``extend`` field, and no endpoint that would
+    accept one (FR-E3).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(default=None, description="Optional reviewer note, recorded verbatim")
+
+
+class AutonomyCandidateResponse(BaseModel):
+    """One action category in the autonomy-promotion report (FR-E5).
+
+    Read-only by construction: no endpoint applies any of this. Raising an autonomy level
+    means publishing a new DNA version through its eval gate.
+    """
+
+    agent: str
+    agent_version_id: uuid.UUID
+    tool_ref: str
+    pending: int
+    granted: int
+    rejected: int
+    expired: int
+    decided: int
+    approval_rate: float | None = Field(
+        default=None, description="granted / decided; null when nothing has been decided"
+    )
+    candidate: bool
+    recommendation: str
+    fatigue_note: str | None = Field(
+        default=None, description="Set when approvals in this category expired unanswered"
+    )
+
+    @classmethod
+    def of(cls, stats: "CategoryStats") -> "AutonomyCandidateResponse":
+        """Project one report row onto the API contract."""
+        return cls.model_validate(stats.as_json())
 
 
 class KnowledgeCollectionResponse(BaseModel):

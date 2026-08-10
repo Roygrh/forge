@@ -20,15 +20,15 @@ mid-flight leaves a partial but truthful trace instead of nothing at all.
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.governance import GovernanceReason, explain
 from app.llm.contract import Budget, CompletionResult
-from app.models import AgentVersion, Event, Run, RunStep, ToolInvocation
+from app.models import AgentVersion, Approval, Event, Run, RunStep, ToolInvocation
 from app.runtime.output import Decision
 from app.tools.contract import ToolOutcome
 
@@ -48,9 +48,19 @@ EVENT_GOVERNANCE_BLOCKED = "governance.blocked"
 EVENT_MODEL_CALLED = "model.called"
 EVENT_TOOL_CALLED = "tool.called"
 EVENT_DECISION_MADE = "decision.made"
+
+#: The human in the loop (FR-E4). Four events, one per state an approval can be in, each
+#: carrying the actor and the timestamp. ``pending`` is the platform parking an action;
+#: the other three are how it ended — and only ``granted`` ever leads to an execution.
+EVENT_APPROVAL_PENDING = "approval.pending"
+EVENT_APPROVAL_GRANTED = "approval.granted"
+EVENT_APPROVAL_REJECTED = "approval.rejected"
+EVENT_APPROVAL_EXPIRED = "approval.expired"
+
 EVENT_RUN_COMPLETED = "run.completed"
 EVENT_RUN_ESCALATED = "run.escalated"
 EVENT_RUN_AWAITING_APPROVAL = "run.awaiting_approval"
+EVENT_RUN_CANCELED = "run.canceled"
 EVENT_RUN_FAILED = "run.failed"
 
 #: Terminal run status -> the event that records it. The mapping is total: there is no
@@ -58,15 +68,29 @@ EVENT_RUN_FAILED = "run.failed"
 _TERMINAL_EVENT_FOR_STATUS = {
     "completed": EVENT_RUN_COMPLETED,
     "escalated": EVENT_RUN_ESCALATED,
-    # Terminal *for this phase*: the run stops and nothing executed. Phase 4.4 makes it
-    # resumable by creating the approval row this event already describes.
+    # A pause, not an ending: the run stops with nothing executed and waits for the
+    # approval queue. It resumes on a grant, and is canceled on a rejection or on the
+    # deadline passing — a run cannot leave this state by itself.
     "awaiting_approval": EVENT_RUN_AWAITING_APPROVAL,
+    # A parked action a human refused, or one whose deadline passed. Nothing ran.
+    "canceled": EVENT_RUN_CANCELED,
     "error": EVENT_RUN_FAILED,
 }
 
-#: The four kinds of ordered step a trace can contain. ``governance`` is the platform
-#: speaking rather than the agent: a refusal, with the reason code that caused it.
-StepKind = Literal["reason", "tool", "decision", "governance"]
+#: Approval status -> the event that records it. Total, like the terminal mapping above:
+#: an approval cannot change state without appending exactly one of these.
+_APPROVAL_EVENT_FOR_STATUS = {
+    "pending": EVENT_APPROVAL_PENDING,
+    "granted": EVENT_APPROVAL_GRANTED,
+    "rejected": EVENT_APPROVAL_REJECTED,
+    "expired": EVENT_APPROVAL_EXPIRED,
+}
+
+#: The five kinds of ordered step a trace can contain. ``governance`` is the platform
+#: speaking rather than the agent — a refusal, with the reason code that caused it — and
+#: ``approval`` is a person speaking: the action they were shown, and what they did
+#: about it.
+StepKind = Literal["reason", "tool", "decision", "governance", "approval"]
 
 
 #: Which event types project into ordered trace steps. Everything else is lifecycle:
@@ -76,6 +100,10 @@ _STEP_KIND_FOR_EVENT: dict[str, StepKind] = {
     EVENT_TOOL_CALLED: "tool",
     EVENT_DECISION_MADE: "decision",
     EVENT_GOVERNANCE_BLOCKED: "governance",
+    EVENT_APPROVAL_PENDING: "approval",
+    EVENT_APPROVAL_GRANTED: "approval",
+    EVENT_APPROVAL_REJECTED: "approval",
+    EVENT_APPROVAL_EXPIRED: "approval",
 }
 
 
@@ -115,10 +143,39 @@ class TraceToolInvocation(BaseModel):
     #: Null for one that executed. The same code appears on the governance step that
     #: follows, so a reader can tie the refusal to the stop it caused.
     reason_code: str | None = None
+    #: Set when this call ran only because a person released it: the approval that
+    #: authorised it and who granted it. Null for an autonomous execution — an action a
+    #: human signed for must never read the same as one the agent took on its own.
+    approval_id: uuid.UUID | None = None
+    released_by: str | None = None
+
+
+class TraceApproval(BaseModel):
+    """One state of one approval, as the trace shows it (FR-E4).
+
+    Carries the action being decided — tool ref and the exact arguments — because that
+    *is* the scope of the approval: one action instance, its parameters, and nothing
+    else. A reader can see what was authorised without joining anything.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    approval_id: uuid.UUID
+    status: str
+    tool_ref: str
+    args: dict[str, Any] | None = None
+    expires_at: datetime
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+    note: str | None = None
+    #: ``approval_rejected`` or ``approval_expired`` when the approval ended the run.
+    #: Null while pending and on a grant, which ends nothing.
+    reason_code: str | None = None
 
 
 class TraceStep(BaseModel):
-    """One ordered step of a run: a model call, a tool call, a decision, or a refusal."""
+    """One ordered step of a run: a model call, a tool call, a decision, a refusal, or
+    a human's decision on an action the run parked."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -128,6 +185,7 @@ class TraceStep(BaseModel):
     decision: dict[str, Any] | None = None
     tool_invocation: TraceToolInvocation | None = None
     governance: TraceGovernance | None = None
+    approval: TraceApproval | None = None
     created_at: datetime
 
 
@@ -174,8 +232,10 @@ def project_trace(events: list[Event]) -> tuple[list[TraceStep], list[TraceEvent
         model_call = None
         decision = None
         governance = None
+        approval = None
 
         if kind == "tool":
+            approval_id = payload.get("approval_id")
             tool_invocation = TraceToolInvocation(
                 id=uuid.UUID(payload["tool_invocation_id"]),
                 tool_ref=payload["tool_ref"],
@@ -185,6 +245,8 @@ def project_trace(events: list[Event]) -> tuple[list[TraceStep], list[TraceEvent
                 status=payload["status"],
                 error=payload.get("error"),
                 reason_code=payload.get("reason_code"),
+                approval_id=uuid.UUID(approval_id) if approval_id else None,
+                released_by=payload.get("released_by"),
             )
         elif kind == "reason":
             model_call = payload
@@ -194,6 +256,18 @@ def project_trace(events: list[Event]) -> tuple[list[TraceStep], list[TraceEvent
                 explanation=payload["explanation"],
                 detail=payload.get("detail"),
                 terminal_status=payload["terminal_status"],
+            )
+        elif kind == "approval":
+            approval = TraceApproval(
+                approval_id=uuid.UUID(payload["approval_id"]),
+                status=payload["status"],
+                tool_ref=payload["tool_ref"],
+                args=payload.get("args"),
+                expires_at=payload["expires_at"],
+                decided_by=payload.get("decided_by"),
+                decided_at=payload.get("decided_at"),
+                note=payload.get("note"),
+                reason_code=payload.get("reason_code"),
             )
         else:
             decision = payload
@@ -206,6 +280,7 @@ def project_trace(events: list[Event]) -> tuple[list[TraceStep], list[TraceEvent
                 decision=decision,
                 tool_invocation=tool_invocation,
                 governance=governance,
+                approval=approval,
                 created_at=event.occurred_at,
             )
         )
@@ -229,6 +304,11 @@ class TraceRecorder:
 
     One recorder per run. It owns the step counter, so ``run_steps.step_no`` is dense
     and monotonic without the loop having to track it.
+
+    A run that parked for an approval is written by *two* recorders in sequence — the one
+    that started it, and the one :meth:`resume` builds when a person releases it. The
+    second picks the counter up from the log rather than from memory, which is the only
+    way it could work: nothing about the first recorder survives the request that made it.
     """
 
     def __init__(self, session: AsyncSession, *, actor: str = "system") -> None:
@@ -236,6 +316,22 @@ class TraceRecorder:
         self._actor = actor
         self._step_no = 0
         self.run: Run | None = None
+
+    @classmethod
+    async def resume(cls, session: AsyncSession, run: Run, *, actor: str = "system") -> Self:
+        """Continue recording an existing run, after its last recorded step.
+
+        ``step_no`` is read back from ``run_steps`` because it is a property of the run,
+        not of this process: the run was paused across a request boundary — possibly
+        across a restart — and its order has to continue rather than start again.
+        """
+        recorder = cls(session, actor=actor)
+        recorder.run = run
+        last = await session.scalar(
+            select(func.coalesce(func.max(RunStep.step_no), 0)).where(RunStep.run_id == run.id)
+        )
+        recorder._step_no = int(last or 0)
+        return recorder
 
     @property
     def steps_recorded(self) -> int:
@@ -247,14 +343,24 @@ class TraceRecorder:
             raise RuntimeError("open_run() must be called before anything is recorded")
         return self.run
 
-    def _event(self, type_: str, payload: dict[str, Any]) -> Event:
+    def _event(
+        self,
+        type_: str,
+        payload: dict[str, Any],
+        *,
+        actor: str | None = None,
+        approval_id: uuid.UUID | None = None,
+    ) -> Event:
         run = self._require_run()
         return Event(
             tenant_id=run.tenant_id,
             type=type_,
-            actor=self._actor,
+            # Overridden for the events a *person* caused: an approval carries the
+            # approver's identity, not the identity the run happens to be executing as.
+            actor=actor if actor is not None else self._actor,
             run_id=run.id,
             agent_version_id=run.agent_version_id,
+            approval_id=approval_id,
             payload=payload,
         )
 
@@ -335,8 +441,13 @@ class TraceRecorder:
         self._session.add(self._event(EVENT_MODEL_CALLED, payload))
         await self._session.commit()
 
-    async def record_tool_call(self, outcome: ToolOutcome) -> None:
-        """Record one trip through the tool gateway, executed or refused."""
+    async def record_tool_call(self, outcome: ToolOutcome) -> ToolInvocation:
+        """Record one trip through the tool gateway, executed or refused.
+
+        Returns the persisted invocation because a parked call needs it: the approval
+        that follows hangs off this exact row, which is what makes an approval cover one
+        action instance with its arguments and nothing else (FR-E2).
+        """
         run = self._require_run()
         self._step_no += 1
         step = RunStep(
@@ -379,7 +490,89 @@ class TraceRecorder:
                     # Assigned by the gateway, carried verbatim: the audit log names the
                     # refusal with the same code the enforcement point used.
                     "reason_code": str(outcome.reason) if outcome.reason else None,
+                    # Present only when a human released this call. An execution somebody
+                    # signed for is not the same fact as one the agent took alone.
+                    "approval_id": (
+                        str(outcome.release.approval_id) if outcome.release is not None else None
+                    ),
+                    "released_by": (
+                        outcome.release.decided_by if outcome.release is not None else None
+                    ),
                 },
+            )
+        )
+        await self._session.commit()
+        return invocation
+
+    async def park_approval(self, invocation: ToolInvocation, *, expires_at: datetime) -> Approval:
+        """Open the pending approval a parked call is waiting on (FR-E2, FR-E3).
+
+        One approval, one invocation — a database unique constraint, not a convention —
+        so what a person is asked to release is exactly one action instance with the
+        arguments the gateway already validated. ``expires_at`` is written once, here,
+        and no operation in the platform moves it.
+        """
+        run = self._require_run()
+        approval = Approval(
+            tenant_id=run.tenant_id,
+            run_id=run.id,
+            tool_invocation_id=invocation.id,
+            status="pending",
+            expires_at=expires_at,
+        )
+        self._session.add(approval)
+        await self._session.flush()  # assigns approval.id, needed by the event's soft ref
+        await self.record_approval(approval, invocation, actor=self._actor)
+        return approval
+
+    async def record_approval(
+        self,
+        approval: Approval,
+        invocation: ToolInvocation,
+        *,
+        actor: str,
+        reason: GovernanceReason | None = None,
+    ) -> None:
+        """Record one state of one approval — parked, granted, rejected, or expired.
+
+        The caller has already put the ``approvals`` row into this session in whatever
+        state it is reporting; this writes the step and the event that go with it and
+        commits all three together, which is the dual-write discipline ADR-008 asks for
+        applied to the human in the loop.
+
+        The action being decided travels in the payload — the tool ref and the exact
+        arguments — so the audit log answers "what was authorised" without a join, and so
+        a later change to the invocation row could not rewrite what somebody approved.
+        """
+        run = self._require_run()
+        self._step_no += 1
+        payload: dict[str, Any] = {
+            "step_no": self._step_no,
+            "approval_id": str(approval.id),
+            "status": approval.status,
+            "tool_ref": invocation.tool_ref,
+            "args": invocation.args,
+            "expires_at": approval.expires_at.isoformat(),
+            "decided_by": approval.decided_by,
+            "decided_at": approval.decided_at.isoformat() if approval.decided_at else None,
+            "note": approval.note,
+            "reason_code": str(reason) if reason is not None else None,
+        }
+        self._session.add(
+            RunStep(
+                tenant_id=run.tenant_id,
+                run_id=run.id,
+                step_no=self._step_no,
+                kind="approval",
+                approval=payload,
+            )
+        )
+        self._session.add(
+            self._event(
+                _APPROVAL_EVENT_FOR_STATUS[approval.status],
+                payload,
+                actor=actor,
+                approval_id=approval.id,
             )
         )
         await self._session.commit()
@@ -443,25 +636,32 @@ class TraceRecorder:
         self,
         *,
         status: str,
-        budget: Budget,
+        budget: Budget | None = None,
         reason: GovernanceReason | None = None,
         detail: str | None = None,
     ) -> Run:
-        """Close the run: terminal status, totals, and the matching terminal event."""
+        """Close the run: terminal status, totals, and the matching terminal event.
+
+        ``budget`` is ``None`` when the run is being closed without the loop having run —
+        a rejected or expired approval cancels a run that spent nothing further, and
+        rewriting its totals from an empty ledger would erase what it did spend.
+        """
         run = self._require_run()
         run.status = status
-        run.total_tokens = budget.tokens_used
-        # Quantized to the column's scale so the object in memory and the row on disk
-        # are the same number: without this, the run returned by POST /runs and the one
-        # returned by GET /runs/{id} serialise differently ("0.0010" vs "0.001000").
-        run.total_cost_usd = Decimal(budget.cost_usd).quantize(_MONEY_SCALE)
+        if budget is not None:
+            run.total_tokens = budget.tokens_used
+            # Quantized to the column's scale so the object in memory and the row on disk
+            # are the same number: without this, the run returned by POST /runs and the
+            # one returned by GET /runs/{id} serialise differently ("0.0010" vs
+            # "0.001000").
+            run.total_cost_usd = Decimal(budget.cost_usd).quantize(_MONEY_SCALE)
         run.finished_at = datetime.now(UTC)
 
         payload: dict[str, Any] = {
             "status": status,
             "steps": self._step_no,
-            "total_tokens": budget.tokens_used,
-            "total_cost_usd": str(budget.cost_usd),
+            "total_tokens": budget.tokens_used if budget is not None else run.total_tokens,
+            "total_cost_usd": str(budget.cost_usd if budget is not None else run.total_cost_usd),
         }
         if reason is not None:
             payload["reason"] = str(reason)

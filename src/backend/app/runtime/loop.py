@@ -18,9 +18,16 @@ Per run: load the pinned DNA, assemble the prompt from its instructions, then lo
 the :class:`~app.runtime.trace.TraceRecorder` as it happens; the loop keeps only the
 message list it is building. An ``AgentRuntime`` instance holds nothing worth
 recovering, which is what makes the run reconstructable from its trace alone.
+
+That property is what makes :meth:`AgentRuntime.resume_run` possible. A tool the DNA
+grants only ``requires_approval`` parks the run in ``awaiting_approval`` with nothing
+executed; when a person releases it, a *new* runtime object in a *later* request rebuilds
+the conversation from the event log (:mod:`app.runtime.transcript`), restores the
+budget and the step count from the run's own ledger, executes the released call through
+the same gateway, and carries on into the same loop. Resuming is not a second code path
+through the engine — it is the same engine, entered further along.
 """
 
-import json
 from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
@@ -44,10 +51,9 @@ from app.llm.contract import (
     UnknownProviderError,
 )
 from app.llm.gateway import LlmGateway
-from app.models import AgentVersion, Run
+from app.models import AgentVersion, Event, Run, ToolInvocation
 from app.runtime.errors import FailClosedError
 from app.runtime.output import (
-    DECISION_ACTIONS,
     DECISION_SCHEMA,
     MAX_OUTPUT_RETRIES,
     Decision,
@@ -56,27 +62,15 @@ from app.runtime.output import (
     interpret,
     review_decision,
 )
-from app.runtime.trace import TraceRecorder
-from app.tools.gateway import ToolGateway
-
-#: The protocol every agent runs under, prepended to its own task prompt. It states the
-#: loop's contract — one tool call or one decision per turn, citations required — and
-#: belongs to the runtime, not to any agent: an agent's DNA describes *what* it decides,
-#: never *how* the loop works.
-RUNTIME_PROTOCOL = (
-    "You are executing inside the Forge runtime. On each turn, do exactly one of:\n"
-    "  (a) call one of the tools you have been granted, or\n"
-    "  (b) return your final decision as a JSON object with the fields "
-    f"action (one of {', '.join(DECISION_ACTIONS)}), citations (a non-empty list), "
-    "reasoning, and confidence (a number from 0 to 1).\n"
-    "Every decision must cite what it applied: rule IDs such as R-001, and — for any "
-    "claim drawn from retrieved knowledge — the document citation the retrieval "
-    "returned (document#section, e.g. AP-Policy-2023.pdf#approval-thresholds). If no "
-    "rule matches, or your confidence is low, decide escalate and say that no rule "
-    "matched — never guess. State your confidence honestly: a decision below this "
-    "agent's declared floor is escalated to a human whatever action you proposed, and "
-    "a confidently wrong answer is the one failure a reviewer cannot catch."
+from app.runtime.trace import EVENT_MODEL_CALLED, TraceRecorder, load_events
+from app.runtime.transcript import (
+    opening_messages,
+    replay_messages,
+    tool_call_message,
+    tool_result_message,
 )
+from app.tools.contract import ApprovalRelease
+from app.tools.gateway import ToolGateway
 
 
 class AgentRuntime:
@@ -154,6 +148,102 @@ class AgentRuntime:
             reason=GovernanceReason.AGENT_DECISION if decision.run_status == "escalated" else None,
         )
 
+    async def resume_run(
+        self,
+        *,
+        run: Run,
+        agent_version: AgentVersion,
+        invocation: ToolInvocation,
+        release: ApprovalRelease,
+        actor: str = "system",
+    ) -> Run:
+        """Carry on a run a person has just released, and execute the action they released.
+
+        Called only by the approval queue, and only with a ``release`` minted from an
+        approval row it has already written as ``granted``. What happens here is
+        deliberately ordinary: the released call goes through the **same tool gateway**
+        as every other call and is checked against the same DNA — a grant revoked while
+        the approval sat in the queue refuses it, exactly as it would refuse a fresh
+        call — and then the loop continues from the conversation the log describes.
+
+        The run's ledger continues too. Budget and step count are restored from what the
+        run has already spent, so an approval buys a person's authorisation, never a
+        second helping of the ceilings the definition declares.
+        """
+        recorder = await TraceRecorder.resume(self._session, run, actor=actor)
+        events = await load_events(self._session, run.id)
+
+        budget = Budget(max_tokens=0, max_cost_usd=Decimal("0"))
+        try:
+            dna = _load_dna(agent_version)
+            _require_supported(dna)
+            budget = Budget(
+                max_tokens=dna.model.max_tokens_per_run,
+                max_cost_usd=dna.model.max_cost_usd_per_run,
+            )
+            budget.restore(tokens_used=run.total_tokens or 0, cost_usd=run.total_cost_usd)
+
+            messages = replay_messages(dna, events)
+            outcome = self._tools.invoke(
+                # The arguments come from the stored invocation and from nowhere else:
+                # the approver released *these* parameters, and the request that
+                # released them carries none of its own (FR-E2).
+                name=self._released_tool_name(invocation),
+                arguments=dict(invocation.args or {}),
+                dna=dna,
+                release=release,
+            )
+            await recorder.record_tool_call(outcome)
+            if not outcome.executed:
+                # The approval was real and is spent; the call still did not run — the
+                # ERP refused it, or the definition no longer permits it. Fail closed:
+                # a released action that could not be carried out is a stopped run with
+                # a reason, never a quiet success.
+                raise FailClosedError(
+                    outcome.reason or GovernanceReason.TOOL_FAILED,
+                    outcome.error or f"released tool {outcome.tool_name!r} did not execute",
+                )
+
+            messages.append(tool_call_message(outcome.tool_name, outcome.arguments))
+            messages.append(tool_result_message(outcome.tool_name, outcome.result))
+
+            decision = await self._loop(
+                recorder,
+                dna,
+                messages,
+                budget,
+                iterations_used=_model_turns_taken(events),
+            )
+            verdict = review_decision(decision, dna.guardrails)
+            if verdict is not None:
+                raise FailClosedError(*verdict)
+        except FailClosedError as exc:
+            await recorder.record_governance(
+                reason=exc.reason, detail=exc.detail, terminal_status=exc.run_status
+            )
+            return await recorder.finish(
+                status=exc.run_status, budget=budget, reason=exc.reason, detail=exc.detail
+            )
+        except Exception as exc:
+            await recorder.finish(status="error", budget=budget, detail=repr(exc))
+            raise
+
+        return await recorder.finish(
+            status=decision.run_status,
+            budget=budget,
+            reason=GovernanceReason.AGENT_DECISION if decision.run_status == "escalated" else None,
+        )
+
+    def _released_tool_name(self, invocation: ToolInvocation) -> str:
+        """The name the gateway knows the parked tool by, from the ref that was recorded.
+
+        Falls back to the ref itself when the registry no longer has it — which the
+        gateway then refuses as ``tool_unknown``. An approval for a tool this build can
+        no longer serve must not be resolved to something else that looks similar.
+        """
+        tool = self._tools.registry.by_ref(invocation.tool_ref)
+        return tool.name if tool is not None else invocation.tool_ref
+
     async def _enforce_daily_ceiling(self, dna: Dna, agent_version: AgentVersion) -> None:
         """Refuse to start when this agent has spent its daily allowance (NFR-3).
 
@@ -194,9 +284,25 @@ class AgentRuntime:
         run_input: dict[str, Any],
         budget: Budget,
     ) -> Decision:
-        """The loop itself: model, tool, model, ... until a decision or a guardrail."""
+        """Open a fresh conversation and run the loop over it."""
         _require_supported(dna)
+        return await self._loop(recorder, dna, opening_messages(dna, run_input), budget)
 
+    async def _loop(
+        self,
+        recorder: TraceRecorder,
+        dna: Dna,
+        messages: list[Message],
+        budget: Budget,
+        *,
+        iterations_used: int = 0,
+    ) -> Decision:
+        """The loop itself: model, tool, model, ... until a decision or a guardrail.
+
+        ``iterations_used`` is what a resumed run has already spent. ``max_steps`` is a
+        ceiling on the run, not on the visit: an approval must not hand the agent a
+        second full allowance of reasoning it was not published with.
+        """
         model = ModelSpec(
             provider=dna.model.provider,
             model_id=dna.model.model_id,
@@ -206,19 +312,15 @@ class AgentRuntime:
             ToolSpec(name=tool.name, description=tool.description, input_schema=tool.input_schema)
             for tool in self._tools.granted_tools(dna)
         ]
-        messages = [
-            Message(role="system", content=f"{RUNTIME_PROTOCOL}\n\n{dna.instructions.task_prompt}"),
-            Message(
-                role="user",
-                content=f"Input for this run:\n{json.dumps(run_input, sort_keys=True, indent=2)}",
-            ),
-        ]
+        # Measured from *now*, deliberately, for a resumed run as much as a new one: the
+        # timeout bounds how long the agent may work, and the hours a person took to
+        # answer their queue are not the agent overrunning.
         deadline = self._now() + timedelta(seconds=dna.guardrails.timeout_seconds)
 
         # `max_steps` bounds reasoning-loop *iterations*, not persisted run_steps rows:
         # one iteration writes a model step, optionally a tool step, and — on the last
         # one — the decision step.
-        for iteration in range(1, dna.guardrails.max_steps + 1):
+        for iteration in range(iterations_used + 1, dna.guardrails.max_steps + 1):
             if self._now() >= deadline:
                 raise FailClosedError(
                     GovernanceReason.TIMEOUT,
@@ -234,11 +336,17 @@ class AgentRuntime:
 
             outcome = self._tools.invoke(name=output.name, arguments=output.arguments, dna=dna)
             # Recorded whether or not it ran: a reviewer must see what was attempted.
-            await recorder.record_tool_call(outcome)
+            invocation = await recorder.record_tool_call(outcome)
             if outcome.pending_approval:
                 # The DNA grants this tool only with a human in the loop. The call is
                 # validated and parked; the run stops here rather than deciding without
-                # the action it asked for, or executing it anyway (FR-E2).
+                # the action it asked for, or executing it anyway (FR-E2). The approval
+                # row is written in the same breath, so the queue a person works from and
+                # the run that is waiting on them cannot get out of step. The deadline is
+                # computed here, from the published definition, and is never extended.
+                await recorder.park_approval(
+                    invocation, expires_at=self._now() + dna.guardrails.approval_sla()
+                )
                 raise FailClosedError(
                     GovernanceReason.APPROVAL_REQUIRED,
                     f"tool {outcome.tool_name!r} requires human approval "
@@ -269,24 +377,8 @@ class AgentRuntime:
                     "goes to a human (R-090/R-091)",
                 )
 
-            messages.append(
-                Message(
-                    role="assistant",
-                    content=json.dumps(
-                        {"tool_call": {"name": output.name, "arguments": output.arguments}},
-                        sort_keys=True,
-                    ),
-                )
-            )
-            messages.append(
-                Message(
-                    role="user",
-                    content=json.dumps(
-                        {"tool_result": {"name": outcome.tool_name, "result": outcome.result}},
-                        sort_keys=True,
-                    ),
-                )
-            )
+            messages.append(tool_call_message(output.name, output.arguments))
+            messages.append(tool_result_message(outcome.tool_name, outcome.result))
 
         raise FailClosedError(
             GovernanceReason.STEP_LIMIT,
@@ -353,6 +445,15 @@ class AgentRuntime:
                 budget=budget,
             )
             return output
+
+
+def _model_turns_taken(events: list[Event]) -> int:
+    """How many reasoning-loop iterations this run has already used.
+
+    Counted from the log rather than remembered: the object that counted them the first
+    time is gone, and ``max_steps`` has to keep meaning "per run" across a pause.
+    """
+    return sum(1 for event in events if event.type == EVENT_MODEL_CALLED)
 
 
 def _load_dna(agent_version: AgentVersion) -> Dna:

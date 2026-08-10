@@ -7,6 +7,7 @@
  */
 
 import type {
+  ApprovalStatus,
   Autonomy,
   DecisionAction,
   ReasonCode,
@@ -148,6 +149,35 @@ export function DecisionActionPill({ action }: { action: DecisionAction }) {
 
 export function decisionActionMeaning(action: DecisionAction): string {
   return ACTION_MEANING[action]
+}
+
+const APPROVAL_STATUS_TONE: Record<ApprovalStatus, Tone> = {
+  pending: 'warn',
+  granted: 'good',
+  rejected: 'bad',
+  // Not neutral: an expiry canceled a run. It is a fail-closed outcome, and it reads
+  // like one — an approval that ran out of time is never a quiet nothing-happened.
+  expired: 'bad',
+}
+
+const APPROVAL_STATUS_MEANING: Record<ApprovalStatus, string> = {
+  pending: 'Waiting for a person. The action has not run and will not run until it is released.',
+  granted: 'A person released this exact action, and the run resumed and carried it out.',
+  rejected: 'A person refused it. The run was canceled and nothing was carried out.',
+  expired:
+    'Nobody decided before the deadline, so the platform canceled the run. An approval that runs out of time is never treated as a yes, and there is no way to extend one.',
+}
+
+export function ApprovalStatusPill({ status }: { status: ApprovalStatus }) {
+  return (
+    <Pill tone={APPROVAL_STATUS_TONE[status]} title={APPROVAL_STATUS_MEANING[status]}>
+      {humanize(status)}
+    </Pill>
+  )
+}
+
+export function approvalStatusMeaning(status: ApprovalStatus): string {
+  return APPROVAL_STATUS_MEANING[status]
 }
 
 const VERSION_STATUS_TONE: Record<VersionStatus, Tone> = {

@@ -8,25 +8,34 @@
  */
 
 import type { ModelCall, RunStep, StepKind, ToolInvocation } from '../api/types'
-import type { DecisionRecord, GovernanceRecord } from '../api/types'
+import type { ApprovalRecord, DecisionRecord, GovernanceRecord } from '../api/types'
 import type { ConflictParty, RetrievalConflict, RetrievalResult, RetrievedChunk } from '../api/types'
 import { isRetrievalResult } from '../api/types'
-import { formatCost, formatOffset, formatTokens, humanize } from '../lib/format'
+import { formatCost, formatDateTime, formatOffset, formatTokens, humanize } from '../lib/format'
 import { Disclosure } from './Disclosure'
 import { JsonBlock, Mono } from './Json'
 import {
+  ApprovalStatusPill,
   AuthorityPill,
   AutonomyPill,
   DecisionActionPill,
   Pill,
   ReasonCodePill,
   ToolStatusPill,
+  approvalStatusMeaning,
   decisionActionMeaning,
   toolStatusMeaning,
 } from './Pill'
 
 /** Per-kind chrome: the rail dot, the icon, and the one-line gloss under the title. */
-const KIND_STYLE: Record<StepKind, { label: string; dot: string; icon: string; gloss: string }> = {
+interface StepStyle {
+  label: string
+  dot: string
+  icon: string
+  gloss: string
+}
+
+const KIND_STYLE: Record<StepKind, StepStyle> = {
   reason: {
     label: 'Reason',
     dot: 'bg-violet-500 ring-violet-100',
@@ -51,7 +60,33 @@ const KIND_STYLE: Record<StepKind, { label: string; dot: string; icon: string; g
     icon: 'text-rose-700',
     gloss: 'The platform refused to go further, and recorded why.',
   },
+  approval: {
+    label: 'Human',
+    dot: 'bg-amber-500 ring-amber-100',
+    icon: 'text-amber-600',
+    gloss: 'A person was asked to release an action — and this is what they did about it.',
+  },
 }
+
+/**
+ * Chrome for a kind this file does not know about.
+ *
+ * `StepKind` is exhaustive at compile time; the wire is not. A step kind the backend
+ * emits before this file learns about it has to render as a plain row rather than take
+ * the whole page down with it — a trace is audit material, and losing the run's history
+ * to one unstyled step is a far worse failure than losing the colour of that step. The
+ * `Record` above still fails the build when `StepKind` grows, so this is the safety net,
+ * not the plan.
+ */
+const UNKNOWN_KIND: StepStyle = {
+  label: 'Step',
+  dot: 'bg-slate-400 ring-slate-100',
+  icon: 'text-slate-600',
+  gloss: 'Recorded by the runtime. This viewer has no rendering for it yet.',
+}
+
+/** A widened view of the map above, so an unrecognised kind is a miss, not a crash. */
+const STYLE_BY_KIND: Partial<Record<StepKind, StepStyle>> = KIND_STYLE
 
 export function Timeline({ steps, runStartedAt }: { steps: RunStep[]; runStartedAt: string }) {
   return (
@@ -66,7 +101,7 @@ export function Timeline({ steps, runStartedAt }: { steps: RunStep[]; runStarted
 }
 
 function TimelineStep({ step, runStartedAt }: { step: RunStep; runStartedAt: string }) {
-  const style = KIND_STYLE[step.kind]
+  const style = STYLE_BY_KIND[step.kind] ?? UNKNOWN_KIND
   // A refusal is the one step that must not read as one more row in a list: it is the
   // moment the platform stopped the agent, and the card says so before anything else.
   const blocked = step.kind === 'governance'
@@ -138,7 +173,62 @@ function StepBody({ step }: { step: RunStep }) {
   if (step.kind === 'governance' && step.governance !== null) {
     return <GovernanceStep block={step.governance} />
   }
+  if (step.kind === 'approval' && step.approval !== null) {
+    return <ApprovalStep approval={step.approval} />
+  }
   return <p className="text-sm text-slate-500">Recorded with no further detail.</p>
+}
+
+// --- Approval -----------------------------------------------------------------
+
+/**
+ * A human's turn in the run: what they were asked to release, and what they did.
+ *
+ * The action and its arguments lead, because that is the *scope* of the approval — one
+ * action instance with its parameters (FR-E2) — and then who decided, when, and why they
+ * said so. A pending step shows the deadline instead of a decision, since the deadline is
+ * the thing that will decide it if nobody else does.
+ */
+function ApprovalStep({ approval }: { approval: ApprovalRecord }) {
+  const pending = approval.status === 'pending'
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <ApprovalStatusPill status={approval.status} />
+        <Mono title="The action this approval covers — and no other">{approval.tool_ref}</Mono>
+        {approval.reason_code !== null && <ReasonCodePill code={approval.reason_code} />}
+      </div>
+
+      <p className="text-sm leading-relaxed text-slate-700">
+        {approvalStatusMeaning(approval.status)}
+      </p>
+
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+        <Field
+          label={pending ? 'Decided by' : 'Decided by'}
+          value={approval.decided_by ?? 'nobody yet'}
+        />
+        <Field
+          label="Decided at"
+          value={approval.decided_at === null ? '—' : formatDateTime(approval.decided_at)}
+        />
+        <Field label="Deadline" value={formatDateTime(approval.expires_at)} />
+      </dl>
+
+      {approval.note !== null && (
+        <div>
+          <div className="mb-1 text-xs font-medium tracking-wide text-slate-500 uppercase">
+            Reviewer note
+          </div>
+          <p className="rounded-md border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-700">
+            {approval.note}
+          </p>
+        </div>
+      )}
+
+      <JsonBlock label="Action decided" value={approval.args ?? {}} />
+    </div>
+  )
 }
 
 // --- Governance ---------------------------------------------------------------
@@ -246,6 +336,17 @@ function ToolStep({ invocation }: { invocation: ToolInvocation }) {
         )}
         {invocation.error !== null && (
           <span className="mt-1 block font-mono text-[12px] text-rose-900">{invocation.error}</span>
+        )}
+        {/*
+          An action a person signed for must never read like one the agent took alone.
+          The gateway records the release on the invocation itself, so this line is a
+          fact from the audit log rather than an inference from a nearby step.
+        */}
+        {invocation.released_by !== null && (
+          <span className="mt-1.5 block text-emerald-800">
+            Released by <span className="font-medium">{invocation.released_by}</span> — this call
+            ran only because a person approved it.
+          </span>
         )}
       </div>
 

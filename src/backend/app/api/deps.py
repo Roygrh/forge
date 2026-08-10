@@ -20,6 +20,7 @@ from typing import Annotated
 from fastapi import Depends, Header, status
 
 from app.api.errors import ApiError
+from app.approvals import ApprovalQueue
 from app.config import get_settings
 from app.db import SessionDep
 from app.erp.store import get_erp
@@ -140,3 +141,25 @@ LlmGatewayDep = Annotated[LlmGateway, Depends(get_llm_gateway)]
 ToolGatewayDep = Annotated[ToolGateway, Depends(get_tool_gateway)]
 ClockDep = Annotated[Callable[[], datetime], Depends(get_clock)]
 ActorDep = Annotated[Actor, Depends(require_role)]
+
+
+def get_approval_queue(
+    session: SessionDep,
+    llm_gateway: LlmGatewayDep,
+    tool_gateway: ToolGatewayDep,
+    clock: ClockDep,
+) -> ApprovalQueue:
+    """Build the approval queue over the same gateways and the same clock as a run.
+
+    The gateways are shared with the runtime deliberately: an approved action is executed
+    by the *same* tool gateway against the *same* published DNA as the call that was
+    parked. Nothing about a human's yes creates a second path to a tool.
+
+    The clock is the injected one for the same reason the runtime's is — expiry is a
+    governance control, and a control that can only be verified by waiting twelve hours
+    is a control nobody verifies.
+    """
+    return ApprovalQueue(session, llm_gateway=llm_gateway, tool_gateway=tool_gateway, clock=clock)
+
+
+ApprovalQueueDep = Annotated[ApprovalQueue, Depends(get_approval_queue)]

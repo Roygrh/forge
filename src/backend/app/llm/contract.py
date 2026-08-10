@@ -112,6 +112,18 @@ class Budget:
         self.tokens_used += usage.total_tokens
         self.cost_usd += usage.cost_usd
 
+    def restore(self, *, tokens_used: int, cost_usd: Decimal | None) -> None:
+        """Reopen a ledger a paused run had already started.
+
+        A run that stopped for a human approval resumes in a later request, with a fresh
+        :class:`Budget` object and the same ceilings. Without this it would resume with a
+        clean slate — an approval would silently buy a second full budget, which is not
+        what anybody approved. The spend comes from the ``runs`` row, the same ledger the
+        daily ceiling is summed from.
+        """
+        self.tokens_used = tokens_used
+        self.cost_usd = Decimal(cost_usd or 0)
+
     def overrun(self) -> str | None:
         """Return which ceiling was breached, or ``None`` while within budget."""
         if self.tokens_used > self.max_tokens:

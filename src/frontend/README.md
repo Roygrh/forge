@@ -2,10 +2,10 @@
 
 React 18 · Vite · TypeScript (strict) · Tailwind ([ADR-007](../../docs/adr/007-frontend-react-vite.md))
 
-**Scope:** two screens — the agent catalog, and the run trace viewer. Phase 4.1 fills
-them with the real accounts-payable agents: the catalog now shows what each agent's DNA
-grants it and at what autonomy, and the trace reads a validator decision as an action
-plus the rules it cited. Agent authoring, the approval queue, and the knowledge and eval
+**Scope:** three screens — the agent catalog, the **approval queue**, and the run trace
+viewer. Phase 4.1 filled the first with the real accounts-payable agents; Phase 4.4 adds
+the second, where a person releases or refuses an action a run has parked, with the
+evidence to decide it on the same screen. Agent authoring and the knowledge and eval
 screens are still deliberately absent — there is nothing behind them yet, and a screen
 that cannot enforce what it displays is worse than no screen.
 
@@ -35,6 +35,19 @@ banner naming `permission_denied`, the timeline shows the denied tool call and t
 governance step that stopped the run, and the explanation is written for someone who has
 never seen the API. A blocked run is meant to be unmistakable from across the room; that
 is the point of the whole screen.
+
+Then open **Approvals**. The comms run is waiting there: what it wants to send, to
+whom, on which invoice, the rules that were in play, and everything it looked at first —
+so the decision needs no second tab (FR-E1). Approve it and the run resumes, sends the
+message, and reaches its own outcome; reject it and the run is canceled with nothing sent.
+Do neither and the deadline decides: an approval that runs out of time **cancels** its
+run, and there is no button anywhere on this screen to extend one, because there is no
+such operation in the API (FR-E3).
+
+To watch segregation of duties bite, switch **Acting as** in the header to *Configurator*
+and try to approve. The server answers 403 and names the permission that was required —
+this SPA keeps no copy of who may decide what, and the refusal is recorded in the audit
+log either way (NFR-5).
 
 Running the validator on the *same* invoice twice escalates the second time: the
 simulated ERP has already approved it and will not approve it again. That is deliberate —
@@ -70,12 +83,14 @@ is what makes the following true by construction rather than by discipline.
   Vite inlines `VITE_*` at build time and injects them at dev-server start, so this
   value is always **the address the browser can reach** — never a Docker service name
   like `http://api:8000`, which resolves to nothing on the user's machine.
-- **`X-Forge-Role` on every request**, from `VITE_FORGE_ROLE` (default `configurator`).
-  This is the demonstration of segregation of duties (NFR-5), not authentication: the
-  header names an actor, the API records it on every event, and no credential is
-  involved. It is shown in the page header for exactly that reason. An unrecognised
-  value falls back to `configurator` rather than being forwarded, so a typo in an env
-  var does not read as a broken backend.
+- **`X-Forge-Role` on every request**, initially from `VITE_FORGE_ROLE` (default
+  `configurator`) and switchable from the page header. This is the demonstration of
+  segregation of duties (NFR-5), not authentication: the header names an actor, the API
+  records it on every event, and no credential is involved. Switching sends a different
+  role name and grants nothing — the **server** decides what a role may do and answers
+  403 when it may not, which is why the approval buttons are never disabled by role here.
+  An unrecognised env value falls back to `configurator` rather than being forwarded, so
+  a typo in an env var does not read as a broken backend.
 - **Failures arrive as `ApiError`**, carrying the platform's `{code, message, details}`
   body, and are rendered with their code visible. "The screen shows exactly what
   happened" does not stop being true when something goes wrong.
@@ -91,6 +106,8 @@ Endpoints consumed, all read-only except the one that starts a run:
 | `GET /agents` · `GET /agents/{id}/versions` | Catalog: what exists, and its DNA |
 | `POST /runs` | The Run button |
 | `GET /runs/{id}` · `GET /runs/{id}/trace` | Run view: header, timeline, raw events |
+| `GET /approvals` · `POST /approvals/{id}/approve` · `POST /approvals/{id}/reject` | The queue, and the two decisions there are |
+| `GET /approvals/report` | The autonomy-promotion report, read-only (FR-E5) |
 
 ## Layout
 
@@ -98,14 +115,15 @@ Endpoints consumed, all read-only except the one that starts a run:
 |---|---|
 | `src/api/types.ts` | The API shapes, mirrored from `openapi.yaml` and `app/api/schemas.py` |
 | `src/api/client.ts` | The single path to the API: base URL, role header, typed errors |
-| `src/App.tsx` | Two routes over `window.location.hash`: `#/` and `#/runs/<id>` |
+| `src/App.tsx` | Three routes over `window.location.hash`: `#/`, `#/approvals`, `#/runs/<id>` |
 | `src/screens/AgentsScreen.tsx` | The catalog: each agent's model, tool grants, guardrails, and a Run button |
 | `src/screens/RunScreen.tsx` | One run: outcome header, timeline, raw events |
-| `src/components/Timeline.tsx` | The ordered steps — reason, tool, decision, and the platform’s own **blocked** step — each rendered for what it is |
+| `src/screens/ApprovalsScreen.tsx` | The queue: proposed action, rules in play, evidence, Approve/Reject, and the read-only promotion report |
+| `src/components/Timeline.tsx` | The ordered steps — reason, tool, decision, the platform’s own **blocked** step, and a person’s **approval** — each rendered for what it is |
 | `src/components/RawEvents.tsx` | The append-only log the timeline was projected from (ADR-008) |
 | `src/components/Pill.tsx` | The badge vocabulary: one colour per state, exhaustive over the contract's unions |
 | `src/components/{Shell,Json,Disclosure,Feedback}.tsx` | Chrome, JSON blocks, disclosures, loading/error/empty |
-| `src/lib/{format,useAsync}.ts` | Presentation helpers, and a three-state loader |
+| `src/lib/{format,useAsync,useActingRole}.ts` | Presentation helpers, a three-state loader, and the acting role as React state |
 
 ## Notes for reviewers
 
@@ -137,8 +155,25 @@ Endpoints consumed, all read-only except the one that starts a run:
   document in CI. The consumed surface is five shapes; a generator in the build is a thing
   to maintain before there is anything to keep in sync. `src/api/types.ts` cites the
   backend module each shape mirrors.
-- **No router, no state library, no component library.** Two routes over the URL hash, one
-  `useAsync` hook, and Tailwind. Each of those would be a dependency carried for a screen
+- **The approval screen is laid out from Kevin's sentence.** *"Show me: what it wants to
+  do, the invoice, the PO next to it, which rule fired, and what's off. If I have to open
+  the ERP in another tab, that's two more minutes each."* So: the proposed action first,
+  with its arguments as labelled fields rather than JSON to decode; the rules in play
+  underneath; then everything the agent actually retrieved, inline. The evidence arrives
+  with the queue, not behind a second request, because a round trip per invoice is the
+  thing the requirement rules out.
+- **The countdown says what happens when it runs out.** "Expires" could mean anything;
+  this one cancels the run. The number comes from the server's own `seconds_remaining` —
+  this screen never decides whether an approval is still live, because the browser's clock
+  is not the one the deadline is measured against.
+- **There is no Extend button, and no code path that would need one.** `client.ts` has no
+  such call because the API has no such operation. The absence is the control.
+- **The UI keeps no copy of the permission matrix.** A role that may not decide gets a 403
+  naming the permission it lacked, and that is what the screen renders. Mirroring
+  `ROLE_PERMISSIONS` here would be a second definition of governance, free to drift from
+  the one that is enforced.
+- **No router, no state library, no component library.** Three routes over the URL hash,
+  one `useAsync` hook, one `useSyncExternalStore` for the acting role, and Tailwind. Each of those would be a dependency carried for a screen
   that does not need it.
 - **The compose image runs the dev server, on purpose.** Vite inlines `VITE_*` at build
   time, so a static production image would have to be rebuilt for every environment it is

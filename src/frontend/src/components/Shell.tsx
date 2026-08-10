@@ -1,15 +1,24 @@
-import { ACTING_ROLE, apiBaseUrl } from '../api/client'
+import { apiBaseUrl, setActingRole } from '../api/client'
+import { ROLES } from '../api/types'
+import type { Role } from '../api/types'
 import { humanize } from '../lib/format'
+import { useActingRole } from '../lib/useActingRole'
 
 /**
  * The application chrome.
  *
- * The header states two things on every screen because both are part of the story
- * rather than debug output: which role this session is acting as (NFR-5 — segregation
- * of duties, made visible), and which API it is reading. A demo that cannot show where
- * its data came from is asking to be taken on trust.
+ * The header states three things on every screen because all three are part of the story
+ * rather than debug output: where you are, which role this session is acting as (NFR-5 —
+ * segregation of duties, made visible), and which API it is reading. A demo that cannot
+ * show where its data came from is asking to be taken on trust.
  */
-export function Shell({ children }: { children: React.ReactNode }) {
+export function Shell({
+  active,
+  children,
+}: {
+  active: 'agents' | 'approvals' | 'run'
+  children: React.ReactNode
+}) {
   return (
     <div className="flex min-h-full flex-col">
       <header className="border-b border-slate-200 bg-white">
@@ -28,11 +37,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
             </span>
           </a>
 
+          <nav className="flex items-center gap-1" aria-label="Main">
+            <NavLink href="#/" label="Agents" current={active === 'agents' || active === 'run'} />
+            <NavLink href="#/approvals" label="Approvals" current={active === 'approvals'} />
+          </nav>
+
           <div className="ml-auto flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-500">
-            <span title="Sent as X-Forge-Role on every request. Segregation of duties, not authentication.">
-              Acting as{' '}
-              <span className="font-medium text-slate-700">{humanize(ACTING_ROLE)}</span>
-            </span>
+            <RoleSwitch />
             <span title="Configured with VITE_API_BASE_URL">
               API <span className="font-mono text-slate-600">{apiBaseUrl}</span>
             </span>
@@ -44,12 +55,60 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
       <footer className="border-t border-slate-200 bg-white">
         <div className="mx-auto max-w-5xl px-6 py-4 text-xs text-slate-400">
-          Phase 3.3 — the walking skeleton, end to end. Traces are projections of the
-          append-only event log (ADR-008). Agent authoring, approvals, knowledge and evals
-          arrive in Phase 4.
+          Phase 4.4 — the human in the loop. Traces are projections of the append-only event
+          log (ADR-008); approvals expire server-side and expiry cancels, never approves
+          (FR-E3). Agent authoring and the eval gate arrive in Phase 4.5.
         </div>
       </footer>
     </div>
+  )
+}
+
+function NavLink({ href, label, current }: { href: string; label: string; current: boolean }) {
+  return (
+    <a
+      href={href}
+      aria-current={current ? 'page' : undefined}
+      className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+        current
+          ? 'bg-slate-100 text-slate-900'
+          : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+      }`}
+    >
+      {label}
+    </a>
+  )
+}
+
+/**
+ * Which hat this session is wearing, and a way to change it.
+ *
+ * Switching sends a different `X-Forge-Role` and nothing else — this control grants no
+ * permission of its own. The **server** decides what a role may do and answers 403 when
+ * it may not, which is the point: segregation of duties is a matrix in the platform, not
+ * a disabled button in a browser. Try to approve something as the configurator and the
+ * refusal (and its audit record) is real.
+ */
+function RoleSwitch() {
+  const role = useActingRole()
+  return (
+    <label
+      className="flex items-center gap-2"
+      title="Sent as X-Forge-Role on every request. Segregation of duties, not authentication — the server enforces what each role may do."
+    >
+      Acting as
+      <select
+        value={role}
+        onChange={(event) => setActingRole(event.target.value as Role)}
+        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:outline-none"
+      >
+        {ROLES.map((option) => (
+          <option key={option} value={option}>
+            {humanize(option)}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }
 
@@ -79,14 +138,14 @@ export function PageHeading({
   )
 }
 
-/** The one button style in the app: a primary action, or a quiet secondary one. */
+/** The one button style in the app: a primary action, a quiet secondary, or a refusal. */
 export function Button({
   variant = 'primary',
   disabled = false,
   onClick,
   children,
 }: {
-  variant?: 'primary' | 'secondary'
+  variant?: 'primary' | 'secondary' | 'approve' | 'reject'
   disabled?: boolean
   onClick: () => void
   children: React.ReactNode
@@ -97,9 +156,20 @@ export function Button({
     primary: 'bg-indigo-600 text-white hover:bg-indigo-500 focus-visible:ring-indigo-500',
     secondary:
       'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 focus-visible:ring-slate-400',
+    // The two decisions look different from each other and from everything else on the
+    // page: an approver about to release a payment should never be one muscle-memory
+    // click away from the wrong verb.
+    approve: 'bg-emerald-600 text-white hover:bg-emerald-500 focus-visible:ring-emerald-500',
+    reject:
+      'border border-rose-300 bg-white text-rose-700 hover:bg-rose-50 focus-visible:ring-rose-400',
   }
   return (
-    <button type="button" disabled={disabled} onClick={onClick} className={`${base} ${variants[variant]}`}>
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`${base} ${variants[variant]}`}
+    >
       {children}
     </button>
   )

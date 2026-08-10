@@ -54,6 +54,19 @@ class GovernanceReason(StrEnum):
     **parked**: the run stops in ``awaiting_approval`` and nothing was executed. An
     approval the platform cannot obtain never decays into an execution (FR-E2, FR-E3)."""
 
+    # --- Human decisions on a parked action (FR-E3, FR-E4) --------------------
+
+    APPROVAL_REJECTED = "approval_rejected"
+    """An approver refused the parked action. The run is canceled and the action is
+    never carried out. Not a platform malfunction — a human exercising the veto the
+    queue exists to give them."""
+
+    APPROVAL_EXPIRED = "approval_expired"
+    """The approval's server-side deadline passed with nobody deciding, so the run is
+    **canceled**. The whole point of the code: an approval that ran out of time is a
+    cancellation, never a silent authorisation, and there is no operation anywhere in
+    the platform that extends or auto-grants one (FR-E3, golden rule 3)."""
+
     # --- Decision contract (ADR-006, R-091) ----------------------------------
 
     NO_RULE_MATCH = "no_rule_match"
@@ -137,6 +150,15 @@ REASON_EXPLANATION: dict[GovernanceReason, str] = {
         "This action requires a person. The call was checked and held for approval; it "
         "was not carried out, and it never will be without someone releasing it."
     ),
+    GovernanceReason.APPROVAL_REJECTED: (
+        "A person reviewed the action the agent proposed and refused it. The run was "
+        "canceled and nothing was carried out."
+    ),
+    GovernanceReason.APPROVAL_EXPIRED: (
+        "Nobody decided on this action before its deadline, so the platform canceled "
+        "the run. An approval that runs out of time is a cancellation — it is never "
+        "treated as a yes, and there is no way to extend one."
+    ),
     GovernanceReason.NO_RULE_MATCH: (
         "No governed rule covered this case, so it went to a human. The platform never "
         "improvises when the rulebook is silent."
@@ -194,6 +216,17 @@ DENIALS: frozenset[GovernanceReason] = frozenset(
 def explain(reason: GovernanceReason) -> str:
     """The human-readable explanation for a reason code."""
     return REASON_EXPLANATION[reason]
+
+
+# --- Human in the loop (FR-E3) ------------------------------------------------
+
+#: How long a parked action waits for a human when its definition does not say. Twelve
+#: hours: long enough to survive a night shift, short enough that a forgotten queue
+#: cancels rather than accumulating stale authority. A definition sets its own with
+#: ``guardrails.approval_sla_seconds``; whichever number applies, the deadline is
+#: **server-side** and running out of it cancels the run (:data:`GovernanceReason
+#: .APPROVAL_EXPIRED`). There is deliberately no operation that extends it.
+DEFAULT_APPROVAL_SLA_SECONDS = 12 * 60 * 60
 
 
 # --- Segregation of duties (NFR-5) --------------------------------------------

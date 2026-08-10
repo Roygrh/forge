@@ -8,17 +8,18 @@ site ever appears.
 
 Every invocation is checked in a fixed order, and the *first* check that fails ends it:
 
-===  ==============================  ======================  =====================
- #   check                           on failure              reason code
-===  ==============================  ======================  =====================
- 1   is the tool **registered**?      blocked                 ``tool_unknown``
- 2   does this DNA **grant** it?      blocked                 ``permission_denied``
- 3   is the grant ``forbidden``?      denied                  ``permission_denied``
- 4   is the grant's **config** valid? blocked                 ``tool_config_invalid``
- 5   do the **arguments** validate?   blocked                 ``args_invalid``
- 6   autonomy ``requires_approval``?  validated, parked       ``approval_required``
- 7   did the tool accept the call?    blocked                 ``tool_failed``
-===  ==============================  ======================  =====================
+===  ===============================  ======================  =====================
+ #   check                            on failure              reason code
+===  ===============================  ======================  =====================
+ 1   is the tool **registered**?       blocked                 ``tool_unknown``
+ 2   does this DNA **grant** it?       blocked                 ``permission_denied``
+ 3   is the grant ``forbidden``?       denied                  ``permission_denied``
+ 4   is the grant's **config** valid?  blocked                 ``tool_config_invalid``
+ 5   do the **arguments** validate?    blocked                 ``args_invalid``
+ 6   ``requires_approval`` and no       validated, parked       ``approval_required``
+     recorded release?
+ 7   did the tool accept the call?     blocked                 ``tool_failed``
+===  ===============================  ======================  =====================
 
 Only a call that survives all seven executes. Nothing here is best-effort: an unknown
 tool, a missing grant, or bad arguments produces a recorded refusal with a machine-
@@ -28,6 +29,13 @@ Note the ordering. Permission is checked before arguments, so a call to a tool t
 was never granted is refused as *ungranted* rather than critiqued for its arguments —
 except for ``requires_approval``, which comes last precisely because a human must never
 be asked to approve a call that would have been rejected as malformed anyway.
+
+Step 6 is where the human-in-the-loop queue meets the enforcement point. A parked call
+is released by an :class:`~app.tools.contract.ApprovalRelease` — the approval row a
+person granted — and by nothing else: there is no "skip approval" flag, no privileged
+caller, and no code path that reaches :meth:`ToolGateway._execute` around this check.
+Every other check still applies to a released call, so an approval granted yesterday
+cannot run a tool a new version has since forbidden.
 
 The gateway does not touch the database. It returns a :class:`ToolOutcome` for every
 attempt, and the runtime's recorder persists all of them — permitted, parked, or refused
@@ -43,7 +51,13 @@ from jsonschema import ValidationError as JsonSchemaValidationError
 
 from app.dna.model import Autonomy, Dna, ToolGrant
 from app.governance import GovernanceReason
-from app.tools.contract import ToolContract, ToolExecutionError, ToolInput, ToolOutcome
+from app.tools.contract import (
+    ApprovalRelease,
+    ToolContract,
+    ToolExecutionError,
+    ToolInput,
+    ToolOutcome,
+)
 from app.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -89,8 +103,20 @@ class ToolGateway:
             granted.append(tool)
         return granted
 
-    def invoke(self, *, name: str, arguments: dict[str, Any], dna: Dna) -> ToolOutcome:
-        """Run a tool call, or refuse it. Never raises for a policy or input failure."""
+    def invoke(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        dna: Dna,
+        release: ApprovalRelease | None = None,
+    ) -> ToolOutcome:
+        """Run a tool call, or refuse it. Never raises for a policy or input failure.
+
+        ``release`` is the recorded human approval for *this* call, supplied only by the
+        approval queue when it resumes a parked run. Without one, a ``requires_approval``
+        grant parks. With one, the call runs — after every other check has passed again.
+        """
         tool = self._registry.by_name(name)
         if tool is None:
             return ToolOutcome(
@@ -173,10 +199,11 @@ class ToolGateway:
                 f"invalid arguments for {tool.name!r}: {schema_error}",
             )
 
-        if effect == "park":
+        if effect == "park" and release is None:
             # Validated, permitted in form, and deliberately not run. The run stops in
-            # `awaiting_approval`; the approval queue that resumes it arrives in Phase
-            # 4.4 (FR-E1..E4). Until then the honest state is "waiting", never "done".
+            # `awaiting_approval` and the approval queue takes over (FR-E1..E4). The
+            # honest state is "waiting", never "done", and it stays waiting until a
+            # person decides — an approval nobody grants expires into a cancellation.
             return ToolOutcome(
                 tool_name=tool.name,
                 tool_ref=tool.ref,
@@ -186,7 +213,14 @@ class ToolGateway:
                 reason=GovernanceReason.APPROVAL_REQUIRED,
             )
 
-        return self._execute(tool, grant, arguments, config)
+        if release is not None:
+            # Injected after config validation, exactly as `knowledge_scope` is: the
+            # approver's identity is not something a DNA grant declares, and a tool that
+            # writes to a system of record posts it under the human who released the
+            # action rather than under the runtime (FR-E4).
+            config["approval"] = release.as_json()
+
+        return self._execute(tool, grant, arguments, config, release)
 
     def _execute(
         self,
@@ -194,6 +228,7 @@ class ToolGateway:
         grant: ToolGrant,
         arguments: dict[str, Any],
         config: dict[str, Any],
+        release: ApprovalRelease | None = None,
     ) -> ToolOutcome:
         """Run the handler. **The only place in Forge that calls a tool handler.**"""
         try:
@@ -236,6 +271,7 @@ class ToolGateway:
             arguments=arguments,
             status="executed",
             result=result,
+            release=release,
         )
 
     @staticmethod

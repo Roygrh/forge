@@ -51,9 +51,23 @@ REQUEST_INFO_REF = "meridian-erp-request-info-from-vendor@1.0.0"
 SCHEDULE_PAYMENT_REF = "meridian-erp-schedule-payment@1.0.0"
 QUERY_RULES_REF = "meridian-ap-rules-query@1.0.0"
 
-#: The actor MeridianERP records for a write posted by the runtime. Phase 4.4 replaces
-#: it with the approving human's identity for anything that passed through the queue.
+#: The actor MeridianERP records for a write the runtime posted on its own authority.
 ERP_ACTOR = "forge-runtime"
+
+
+def _actor(call: ToolInput) -> str:
+    """Who MeridianERP records as having posted this write.
+
+    ``forge-runtime`` for an autonomous call, and the **approving human** for one that
+    came out of the approval queue: the gateway injects the granted approval into the
+    call's config, so the client's system of record names the person who released the
+    action rather than the software that carried it out (FR-E4). An ERP entry that says
+    "the AI did it" is exactly the answer Dana Whitfield said an auditor will not accept.
+    """
+    approval = call.config.get("approval")
+    if isinstance(approval, dict) and approval.get("decided_by"):
+        return str(approval["decided_by"])
+    return ERP_ACTOR
 
 
 # --- Shared schema fragments --------------------------------------------------
@@ -384,7 +398,7 @@ def _approve_invoice_tool(erp: ErpStore) -> ToolContract:
         try:
             posted = erp.approve_invoice(
                 invoice.id,
-                actor=ERP_ACTOR,
+                actor=_actor(call),
                 detail={
                     "amount_usd": str(invoice.amount_usd),
                     "cited_rule_ids": list(call.arguments["cited_rule_ids"]),
@@ -460,7 +474,7 @@ def _schedule_payment_tool(erp: ErpStore) -> ToolContract:
         try:
             posted = erp.schedule_payment(
                 invoice.id,
-                actor=ERP_ACTOR,
+                actor=_actor(call),
                 detail={
                     "pay_date": str(call.arguments["pay_date"]),
                     "amount_usd": str(invoice.amount_usd),
@@ -516,7 +530,7 @@ def _request_info_tool(erp: ErpStore) -> ToolContract:
         try:
             posted = erp.request_info(
                 invoice.id,
-                actor=ERP_ACTOR,
+                actor=_actor(call),
                 detail={"question": str(call.arguments["question"]), "channel": channel},
             )
         except ErpError as exc:

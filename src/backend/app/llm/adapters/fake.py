@@ -3,7 +3,7 @@
 Determinism is the point. The runtime loop is a pure function of the turns it gets
 back, so a fixed script produces a byte-identical run every time: same steps, same
 events, same decision. That is what lets a test assert on a whole trace instead of on
-"something happened", and what lets the eval suite (Phase 4.4) be a regression gate
+"something happened", and what lets the eval suite (Phase 4.5) be a regression gate
 rather than a mood ring.
 
 No network, no key, no clock. Build one with the helpers below::

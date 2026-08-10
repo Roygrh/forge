@@ -67,10 +67,11 @@ erDiagram
         uuid tenant_id FK
         uuid run_id FK
         int step_no
-        text kind "reason | tool | decision | governance"
+        text kind "reason | tool | decision | governance | approval"
         jsonb model_call "model, tokens, cost"
         jsonb decision "action, rule citations, confidence"
         jsonb governance "reason_code, explanation, detail"
+        jsonb approval "status, actor, decided_at, note, expires_at"
         timestamptz created_at
     }
     tool_invocations {
@@ -89,12 +90,12 @@ erDiagram
         uuid id PK
         uuid tenant_id FK
         uuid run_id FK
-        uuid tool_invocation_id FK
+        uuid tool_invocation_id FK "unique: one action instance per approval"
         text status "pending | granted | rejected | expired"
-        timestamptz expires_at "server-side, fail-closed"
-        text decision "approve | reject, null until decided"
-        text decided_by "actor"
-        timestamptz decided_at
+        timestamptz expires_at "server-side, fail-closed, never extended"
+        text decision "approve | reject; null for an expiry, which decides nothing"
+        text decided_by "actor, or system for an expiry"
+        timestamptz decided_at "the deadline itself when expired"
         text note
         timestamptz created_at
     }
@@ -186,7 +187,7 @@ erDiagram
         bigint event_id PK "monotonic"
         uuid tenant_id FK
         timestamptz occurred_at
-        text type "run.started, decision.made, approval.granted, version.published, ..."
+        text type "run.started, decision.made, approval.pending|granted|rejected|expired, run.canceled, ..."
         text actor "system or user id"
         uuid run_id FK "soft ref, nullable"
         uuid agent_version_id FK "soft ref, nullable"
@@ -210,9 +211,33 @@ does not grant, a blown budget, a decision below its confidence floor — it wri
 `run_steps` row of kind `governance` carrying the machine-readable `reason_code`, the
 plain-language explanation that goes with it, and the circumstance that triggered it.
 The reason codes are defined once (`app/governance.py`) and used unchanged by the
-runtime, the audit log, the API, and the UI. A run carries at most one: the platform
-stops once, and it always says why (FR-C5). Refusals that never became a run — an
-operation denied to a role that lacked its permission — are events without a `run_id`.
+runtime, the audit log, the API, and the UI. A run carries one per stop, and it always
+says why (FR-C5) — normally exactly one, since a stopped run is over. The exception is
+the one state a run comes *back* from: a run that paused for a human approval records
+`approval_required` when it parked and, if it stops again, the code that ended it — an
+`approval_rejected`, an `approval_expired`, or whatever the resumed loop hit. Refusals
+that never became a run — an operation denied to a role that lacked its permission — are
+events without a `run_id`.
+
+**A human's decision is a step too.** `run_steps.kind = 'approval'` records the parked
+action's deadline and the approve / reject / expire that answered it, with the actor and
+the timestamp (FR-E4). A person deciding has a position in the run's order and is what
+happened next, so it belongs beside the model's steps and the platform's rather than only
+in a side table. The step carries the tool ref and the exact arguments being decided,
+which is what makes the log answer *what was authorised* without a join — and what stops
+a later change to the `tool_invocations` row from rewriting what somebody approved.
+
+**`awaiting_approval` is the one non-terminal stop.** Every other way a run ends is
+final. A parked action leaves the run waiting on the `approvals` row written in the same
+transaction as the `tool.called` event that parked it, and the run leaves that state in
+exactly three ways: `granted` resumes it (the released call goes back through the same
+tool gateway, and the run continues to a terminal state of its own), while `rejected` and
+`expired` cancel it. **Expiry cancels; it never approves** — `expires_at` is written once
+from the agent's `guardrails.approval_sla_seconds`, compared against the server's clock,
+and moved by nothing: there is no extend operation in the API, in the queue, or in this
+schema (FR-E3). A resumed run is recorded by a second `TraceRecorder` that reads its step
+counter and its spend back from the run's own rows, so `max_steps` and the budget keep
+meaning "per run" across the pause.
 
 **Events are the source of truth.** The `events` table is append-only: the application
 role is granted `INSERT`/`SELECT` only — no `UPDATE`, no `DELETE` (ADR-008). Immutability

@@ -53,6 +53,12 @@ class RunStep(Base):
     governance: Mapped[dict[str, Any] | None] = mapped_column(
         comment="reason_code, explanation, detail — why the platform stopped (FR-C5)"
     )
+    # A human's turn in the run. Parking an action, and the approve/reject/expire that
+    # answers it, are things that happened *to this run* at a position in its order —
+    # so they are steps, beside the model's and the platform's (FR-E4).
+    approval: Mapped[dict[str, Any] | None] = mapped_column(
+        comment="approval lifecycle: status, actor, decided_at, note, expires_at (FR-E4)"
+    )
     created_at: Mapped[CreatedAt]
 
 

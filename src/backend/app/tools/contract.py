@@ -6,8 +6,10 @@ handler. Splitting it that way is what lets the gateway validate a call before a
 handler runs, and what lets the trace record an attempt that never executed.
 """
 
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Literal
 
 from app.dna.model import Autonomy
@@ -22,6 +24,35 @@ from app.governance import GovernanceReason
 #: ``blocked``   — refused by policy or validation; the handler never ran.
 #: ``denied``    — the DNA grants the tool as ``forbidden``.
 InvocationStatus = Literal["validated", "executed", "blocked", "denied"]
+
+
+@dataclass(frozen=True)
+class ApprovalRelease:
+    """A human's recorded decision to let **one** parked call run (FR-E2, FR-E4).
+
+    The gateway parks every ``requires_approval`` call. This is the only thing that
+    unparks one, and it is evidence rather than a flag: it names the approval row, the
+    person who granted it, and when. A release is minted in exactly one place — the
+    approval queue, from a ``granted`` row it just wrote — so "executed without a
+    recorded approval" is not a state the code can reach.
+
+    It authorises the call it was minted for and nothing else. Granularity is structural:
+    one approval row exists per ``tool_invocations`` row (a unique constraint), the queue
+    replays *that row's stored arguments*, and an approver's request body carries no
+    arguments at all. Approving a $4,000 payment cannot approve a $40,000 one.
+    """
+
+    approval_id: uuid.UUID
+    decided_by: str
+    decided_at: datetime
+
+    def as_json(self) -> dict[str, Any]:
+        """The form a handler and the trace see."""
+        return {
+            "approval_id": str(self.approval_id),
+            "decided_by": self.decided_by,
+            "decided_at": self.decided_at.isoformat(),
+        }
 
 
 @dataclass(frozen=True)
@@ -99,6 +130,10 @@ class ToolOutcome:
     result: dict[str, Any] | None = None
     error: str | None = None
     reason: GovernanceReason | None = None
+    #: The approval that released this call, when it ran only because a human said so.
+    #: ``None`` for everything else. Carried into the trace so a released execution is
+    #: never indistinguishable from an autonomous one (FR-E4).
+    release: ApprovalRelease | None = None
 
     @property
     def executed(self) -> bool:

@@ -1,6 +1,7 @@
 """The tool registry and gateway — the only path from an agent to a tool (FR-C1)."""
 
 from app.tools.contract import (
+    ApprovalRelease,
     InvocationStatus,
     ToolContract,
     ToolExecutionError,
@@ -39,6 +40,7 @@ __all__ = [
     "READ_INVOICE_REF",
     "REQUEST_INFO_REF",
     "SCHEDULE_PAYMENT_REF",
+    "ApprovalRelease",
     "InvocationStatus",
     "ToolContract",
     "ToolExecutionError",

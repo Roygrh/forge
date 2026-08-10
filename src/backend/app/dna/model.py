@@ -8,10 +8,13 @@ cannot reach the runtime either. ``tests/test_dna_schema.py`` parses the shipped
 examples through both, which is what keeps the mirror honest.
 """
 
+from datetime import timedelta
 from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.governance import DEFAULT_APPROVAL_SLA_SECONDS
 
 Autonomy = Literal["autonomous", "requires_approval", "forbidden"]
 
@@ -77,6 +80,15 @@ class Guardrails(_Block):
     min_decision_confidence: float
     escalate_on_no_rule_match: Literal[True]
     require_citations: Literal[True]
+    #: How long an action this agent parks waits for a human (FR-E3). ``None`` means the
+    #: platform default (:data:`~app.governance.DEFAULT_APPROVAL_SLA_SECONDS`) applies —
+    #: absent from a definition is "unstated", not "unlimited". Whichever number applies,
+    #: the deadline is server-side and running out of it cancels the run.
+    approval_sla_seconds: int | None = None
+
+    def approval_sla(self) -> timedelta:
+        """The SLA a parked action of this agent waits under."""
+        return timedelta(seconds=self.approval_sla_seconds or DEFAULT_APPROVAL_SLA_SECONDS)
 
 
 class Evals(_Block):

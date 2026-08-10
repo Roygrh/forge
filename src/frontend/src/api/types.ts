@@ -31,7 +31,10 @@ export type RunStatus =
   | 'canceled'
   | 'error'
 
-export type StepKind = 'reason' | 'tool' | 'decision' | 'governance'
+export type StepKind = 'reason' | 'tool' | 'decision' | 'governance' | 'approval'
+
+/** Where one parked action stands. Only `granted` ever leads to an execution (FR-E3). */
+export type ApprovalStatus = 'pending' | 'granted' | 'rejected' | 'expired'
 
 /**
  * Why the platform stopped, blocked, or refused — the machine-readable half of a
@@ -46,6 +49,8 @@ export type ReasonCode =
   | 'tool_config_invalid'
   | 'tool_failed'
   | 'approval_required'
+  | 'approval_rejected'
+  | 'approval_expired'
   | 'no_rule_match'
   | 'knowledge_conflict'
   | 'low_confidence'
@@ -240,6 +245,13 @@ export interface ToolInvocation {
   error: string | null
   /** The governance code the gateway assigned. Null for a call that executed. */
   reason_code: ReasonCode | null
+  /**
+   * Set when this call ran only because a person released it. Null for an autonomous
+   * execution — an action a human signed for must never read like one the agent took
+   * on its own (FR-E4).
+   */
+  approval_id: string | null
+  released_by: string | null
 }
 
 /**
@@ -298,6 +310,26 @@ export interface DecisionRecord {
   output?: JsonObject
 }
 
+/**
+ * One state of one approval, as a step of the run.
+ *
+ * It carries the tool ref and the exact arguments being decided, because that is the
+ * *scope* of the approval — one action instance, its parameters, and nothing else
+ * (FR-E2). A reader can see what was authorised without joining anything.
+ */
+export interface ApprovalRecord {
+  approval_id: string
+  status: ApprovalStatus
+  tool_ref: string
+  args: JsonObject | null
+  expires_at: string
+  decided_by: string | null
+  decided_at: string | null
+  note: string | null
+  /** `approval_rejected` or `approval_expired` when the approval ended the run. */
+  reason_code: ReasonCode | null
+}
+
 export interface RunStep {
   step_no: number
   kind: StepKind
@@ -305,6 +337,7 @@ export interface RunStep {
   decision: DecisionRecord | null
   tool_invocation: ToolInvocation | null
   governance: GovernanceRecord | null
+  approval: ApprovalRecord | null
   created_at: string
 }
 
@@ -324,6 +357,104 @@ export interface RunTrace {
   steps: RunStep[]
   /** The log the steps were projected from, including lifecycle events that are not steps. */
   events: RunEvent[]
+}
+
+// --- Approvals (FR-E1..E5) -----------------------------------------------------
+
+/**
+ * The action a run parked, exactly as the tool gateway validated it.
+ *
+ * `status` is always `validated` while pending: checked, permitted in form, and
+ * deliberately not run.
+ */
+export interface ProposedAction {
+  tool_invocation_id: string
+  tool_ref: string
+  autonomy: Autonomy
+  args: JsonObject | null
+  status: ToolStatus
+}
+
+/** One tool call the agent executed before it asked for a human. */
+export interface ApprovalObservation {
+  tool_invocation_id: string
+  tool_ref: string
+  tool_name: string
+  args: JsonObject | null
+  result: JsonObject | null
+}
+
+/**
+ * Everything the agent gathered before it asked (FR-E1).
+ *
+ * Kevin Osei: *"Show me: what it wants to do, the invoice, the PO next to it, which rule
+ * fired, and what's off. If I have to open the ERP in another tab, that's two more
+ * minutes each."* This arrives with the queue, not behind a second request, for exactly
+ * that reason.
+ */
+export interface ApprovalEvidence {
+  agent: string
+  agent_description: string | null
+  run_input: JsonObject
+  observations: ApprovalObservation[]
+  /** Governed rule ids present in what the agent gathered — the rules in play. */
+  rule_ids: string[]
+}
+
+export interface Approval {
+  id: string
+  tenant_id: string
+  run_id: string
+  /** State of the run this approval is holding: `awaiting_approval` while pending. */
+  run_status: RunStatus
+  status: ApprovalStatus
+  proposed_action: ProposedAction
+  evidence: ApprovalEvidence
+  /** The sentence the platform recorded when it parked the action. */
+  why_approval_required: string
+  /**
+   * Server-side deadline. On expiry the run is **canceled**, never approved, and no
+   * operation in the API moves this value (FR-E3) — which is why there is no `extend`
+   * anywhere in this file.
+   */
+  expires_at: string
+  /** Whole seconds left; 0 once the deadline has passed. */
+  seconds_remaining: number
+  decision: 'approve' | 'reject' | null
+  /** `role:<role>` for a human decision, `system` for an expiry. */
+  decided_by: string | null
+  decided_at: string | null
+  note: string | null
+  created_at: string
+}
+
+/**
+ * One action category in the autonomy-promotion report (FR-E5).
+ *
+ * Read-only, and there is no call in `api` that applies one: autonomy lives in a
+ * published DNA document, so raising it means authoring a new version through the eval
+ * gate — never a statistic crossing a line.
+ */
+export interface AutonomyCandidate {
+  agent: string
+  agent_version_id: string
+  tool_ref: string
+  pending: number
+  granted: number
+  rejected: number
+  /** Approvals nobody answered. Each canceled its run; none counts as consent. */
+  expired: number
+  decided: number
+  /** granted / decided; null when nothing has been decided. */
+  approval_rate: number | null
+  candidate: boolean
+  recommendation: string
+  fatigue_note: string | null
+}
+
+/** The body of approve and reject: a note, and deliberately no arguments (FR-E2). */
+export interface ApprovalDecisionRequest {
+  note?: string
 }
 
 /** The platform's error body: every failure is `{code, message, details}`. */

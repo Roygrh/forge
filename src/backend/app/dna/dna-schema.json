@@ -167,6 +167,12 @@
         "require_citations": {
           "const": true,
           "description": "Const-locked (R-092): every decision must cite the rule ID(s) applied; a decision without citations is rejected by the runtime."
+        },
+        "approval_sla_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 604800,
+          "description": "How long an action this agent parks for approval waits for a human (FR-E3). Optional; the platform default applies when absent. The deadline is enforced server-side and running out of it CANCELS the run — expiry never approves, and no operation extends it."
         }
       }
     },

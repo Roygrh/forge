@@ -57,8 +57,12 @@ export function RunScreen({ runId, onBack }: { runId: string; onBack: () => void
 
 function RunDetail({ view }: { view: RunView }) {
   const { run, trace } = view
-  // A run may carry at most one governance step: the platform stops once.
-  const blocked = trace.steps.find((step) => step.kind === 'governance')?.governance ?? null
+  // The *last* refusal, not the first. A run normally carries one — it stops once — but
+  // one that paused for a human approval carries the block that paused it and then the
+  // one that ended it (a rejection, an expiry, or whatever the resumed loop hit). The
+  // banner is about how this run ended, so it reads from the end.
+  const blocked =
+    trace.steps.filter((step) => step.kind === 'governance').at(-1)?.governance ?? null
 
   return (
     <div className="space-y-6">
