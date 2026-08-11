@@ -38,6 +38,9 @@ class EvalCase(Base):
     suite_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("eval_suites.id"), index=True)
     code: Mapped[str] = mapped_column(comment="E-xx")
     scenario: Mapped[str]
+    input: Mapped[dict[str, Any]] = mapped_column(
+        comment="the run input this case sends, e.g. {invoice_id: inv-0001}"
+    )
     expected_action: Mapped[str]
     expected_citations: Mapped[list[str] | None] = mapped_column(comment="R-xxx list")
     must_not_call: Mapped[list[str] | None] = mapped_column(comment="e.g. approve_invoice")

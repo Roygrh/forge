@@ -16,7 +16,7 @@ a changed embedding provider re-embeds the corpus).
 Usage (from src/backend, with DATABASE_URL set or the compose default reachable):
 
     python -m scripts.seed
-    python -m scripts.seed --refresh-rules --refresh-knowledge
+    python -m scripts.seed --refresh-rules --refresh-knowledge --refresh-evals
 """
 
 import argparse
@@ -29,8 +29,9 @@ from sqlalchemy.orm import Session
 
 from app.db import sync_session
 from app.dna import SHIPPED_AGENT_SLUGS, load_agent_dna, validate_dna
+from app.evals.catalog import CASES, SUITE_NAME, SUITE_SLUG, SUITE_VERSION
 from app.knowledge import ingest_knowledge
-from app.models import Agent, AgentVersion, Event, Rule, Tenant
+from app.models import Agent, AgentVersion, EvalCase, EvalSuite, Event, Rule, Tenant
 from app.rules.catalog import CATALOG, RULESET_VERSION
 
 MERIDIAN_SLUG = "meridian-supply-co"
@@ -127,6 +128,71 @@ def seed_knowledge(session: Session, tenant: Tenant, *, refresh: bool = False) -
     return ingest_knowledge(session, tenant, refresh=refresh)
 
 
+def seed_evals(session: Session, tenant: Tenant, *, refresh: bool = False) -> tuple[int, int]:
+    """Write the 20 evaluation cases into ``eval_suites``/``eval_cases`` (FR-F1).
+
+    Returns ``(written, left_alone)``. The catalogue in :mod:`app.evals.catalog` is the
+    machine-readable form of ``docs/01-discovery/06-eval-cases.md``; from here on the
+    runner and the publish gate read the tables, never the module. Same convention as
+    the rules: existing cases are left alone unless ``--refresh-evals`` deliberately
+    restores the shipped set — though unlike a rule, a case is never *weakened* to make
+    a version pass, and the refresh restores exactly what the document says.
+    """
+    suite = session.scalar(
+        select(EvalSuite).where(
+            EvalSuite.tenant_id == tenant.tenant_id,
+            EvalSuite.slug == SUITE_SLUG,
+            EvalSuite.version == SUITE_VERSION,
+        )
+    )
+    if suite is None:
+        suite = EvalSuite(
+            tenant_id=tenant.tenant_id,
+            slug=SUITE_SLUG,
+            name=SUITE_NAME,
+            version=SUITE_VERSION,
+        )
+        session.add(suite)
+        session.flush()  # assigns suite.id for the case rows
+
+    existing = {
+        row.code: row
+        for row in session.scalars(select(EvalCase).where(EvalCase.suite_id == suite.id))
+    }
+
+    written = 0
+    for case in CASES:
+        row = existing.get(case.code)
+        if row is not None and not refresh:
+            continue
+        if row is None:
+            row = EvalCase(tenant_id=tenant.tenant_id, suite_id=suite.id, code=case.code)
+            session.add(row)
+        row.scenario = case.scenario
+        row.input = dict(case.input)
+        row.expected_action = case.expected_action
+        row.expected_citations = list(case.expected_citations)
+        row.must_not_call = list(case.must_not_call)
+        written += 1
+
+    if written:
+        session.add(
+            Event(
+                tenant_id=tenant.tenant_id,
+                type="evals.seeded",
+                actor="seed-script",
+                payload={
+                    "suite": f"{SUITE_SLUG}@{SUITE_VERSION}",
+                    "cases_written": written,
+                    "cases_left_alone": len(CASES) - written,
+                    "refresh": refresh,
+                    "source": "docs/01-discovery/06-eval-cases.md",
+                },
+            )
+        )
+    return written, len(CASES) - written
+
+
 def seed_agent(session: Session, tenant: Tenant, slug: str) -> tuple[AgentVersion, bool]:
     """Ensure one shipped agent's published version exists.
 
@@ -135,11 +201,12 @@ def seed_agent(session: Session, tenant: Tenant, slug: str) -> tuple[AgentVersio
 
     **Publishing here is a seed insert, not the publish gate.** The real transition is
     ``POST /agents/{id}/versions/{version}/publish``, which refuses (409) unless the
-    version has a passing eval run for its declared suite (FR-F2). That endpoint and the
-    eval runner arrive in Phase 4.5; these rows exist so the runtime has something
-    published to execute in the meantime, and this is the only place a version becomes
-    published without passing its gate — which is why ``published_eval_run_id`` is left
-    null and the event says ``gate: bypassed:seed``.
+    version has a passing eval run for its declared suite (FR-F2). These rows exist so a
+    freshly seeded stack has something published to execute, and this is the **only**
+    place a version becomes published without passing its gate — the documented
+    exception — which is why ``published_eval_run_id`` is left null and the event says
+    ``gate: bypassed:seed``. Every version created through the API earns its publish
+    through the eval runner or stays a draft.
     """
     document = load_agent_dna(slug)
     validate_dna(document)
@@ -228,6 +295,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Rebuild every knowledge collection's chunks (re-chunks and re-embeds).",
     )
+    parser.add_argument(
+        "--refresh-evals",
+        action="store_true",
+        help="Restore the shipped eval suite exactly as 06-eval-cases.md defines it.",
+    )
     args = parser.parse_args(argv)
 
     with sync_session() as session:
@@ -238,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         chunks_written, chunks_left = seed_knowledge(
             session, tenant, refresh=args.refresh_knowledge
         )
+        cases_written, cases_left = seed_evals(session, tenant, refresh=args.refresh_evals)
         agents = seed_ap_agents(session, tenant)
         session.commit()
 
@@ -252,6 +325,10 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"knowledge: {chunks_written} chunks written, {chunks_left} already present "
             f"and left alone"
+        )
+        print(
+            f"evals {SUITE_SLUG}@{SUITE_VERSION}: {cases_written} cases written, "
+            f"{cases_left} already present and left alone"
         )
         for slug, (version, created) in agents.items():
             print(

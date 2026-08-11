@@ -35,7 +35,8 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 | 4.2 | Governance in depth (autonomy, fail-closed, limits, SoD, visible blocks) | ✅ Complete |
 | 4.3 | Knowledge (authority-ranked retrieval, conflict resolution, citations) | ✅ Complete |
 | 4.4 | Human in the loop (approval queue, fail-closed expiry, autonomy report) | ✅ Complete |
-| 4.5–4.6 | Evals · observability | ⬜ Planned |
+| 4.5 | Evaluation suite as publish gate (20 seeded cases, offline runner, hard 409) | ✅ Complete |
+| 4.6 | Observability | ⬜ Planned |
 | 5 | Deployment | ⬜ Planned |
 | 6 | Demo packaging | ⬜ Planned |
 
@@ -65,4 +66,6 @@ refused and nothing was executed.
 
 A tool handler is invoked in exactly one place in the codebase, and a test reads the source tree to keep it that way. No role may both configure an agent and approve its actions — that is a permission matrix the build refuses to start without, not a note in a policy document.
 
-Knowledge retrieval with authority ranking, the approval queue, and the eval publish gate are the rest of Phase 4. See `src/backend/README.md` for the quickstart, and `src/frontend/README.md` for the UI.
+**Nothing ships without passing its evals.** The 20 evaluation cases written during discovery — before the agents existed — are seeded into the database and runnable with one command (`python -m scripts.run_evals`): each case executes a real run of the version under test, deterministic and offline, and is scored by programmatic asserts — final action, cited rule IDs, tools called and *not* called, budgets, and a reconstructable trace. `POST .../publish` is the gate itself: it answers **409** until this exact version has a completed, passing eval run for the suite its own DNA declares, and the passing run is recorded on the version as the publish's evidence. `python -m scripts.demo_publish_gate` prints the whole story — refused with 409, 20/20 green, published with the eval run attached. The **Evals** screen shows every case's expected-vs-actual and disables the publish action with its reason while the gate is unmet — but the button is a courtesy; the 409 is the control.
+
+Observability dashboards are the rest of Phase 4. See `src/backend/README.md` for the quickstart, and `src/frontend/README.md` for the UI.

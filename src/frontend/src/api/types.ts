@@ -457,6 +457,80 @@ export interface ApprovalDecisionRequest {
   note?: string
 }
 
+// --- Evals & the publish gate (FR-F1..F3) ----------------------------------------
+
+/**
+ * Where one eval run stands. Typed as an open string on purpose: the run executes
+ * inline today so only these two values are served, but a queued executor would add
+ * states, and an unmapped one must render as itself rather than blank the screen.
+ */
+export type EvalRunStatus = 'running' | 'completed' | (string & {})
+
+/** One versioned set of eval cases — the suite a DNA's `evals.suite_ref` names. */
+export interface EvalSuite {
+  id: string
+  tenant_id: string
+  slug: string
+  name: string
+  /** semver of the case set */
+  version: string
+  case_count: number
+  created_at: string
+}
+
+/** One programmatic assert of one case (FR-F3). */
+export interface EvalCheckResult {
+  name: string
+  passed: boolean
+  detail: string
+}
+
+/**
+ * One scored case: expected vs actual, and every check behind the verdict.
+ *
+ * `run_id` names a real run of the version under test — the trace screen can open it,
+ * because the runner executes cases through the same runtime as everything else.
+ */
+export interface EvalCaseResult {
+  /** Case code, e.g. E-14. */
+  code: string
+  scenario: string
+  passed: boolean
+  expected_action: string
+  /** Null when the run reached no decision (e.g. the platform refused a tool). */
+  actual_action: string | null
+  expected_citations: string[]
+  actual_citations: string[]
+  must_not_call: string[]
+  tools_called: string[]
+  run_id: string
+  run_status: string
+  /** Why the case failed, or `ok`. */
+  detail: string
+  checks: EvalCheckResult[]
+}
+
+/** One scoring of one suite against one agent version — the publish gate's evidence. */
+export interface EvalRun {
+  id: string
+  tenant_id: string
+  suite_id: string
+  agent_version_id: string
+  status: EvalRunStatus
+  /** The publish-gate verdict (FR-F2). Null while still executing. */
+  passed: boolean | null
+  total: number | null
+  passed_count: number | null
+  case_results: EvalCaseResult[] | null
+  created_at: string
+}
+
+/** The body of `POST /eval/suites/{suiteId}/run`: which version to score. */
+export interface RunSuiteRequest {
+  agent_id: string
+  version: string
+}
+
 /** The platform's error body: every failure is `{code, message, details}`. */
 export interface ApiErrorBody {
   code: string

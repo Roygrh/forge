@@ -167,6 +167,7 @@ erDiagram
         uuid suite_id FK
         text code "E-xx"
         text scenario
+        jsonb input "the run input this case sends, e.g. {invoice_id: inv-0001}"
         text expected_action
         jsonb expected_citations "R-xxx list"
         jsonb must_not_call "e.g. approve_invoice"
@@ -301,6 +302,19 @@ authorities are equal, resolves nothing and the run fails closed (R-091,
 `knowledge_conflict`). Either way the conflict writes a `remediation_items` row flagging
 the stale document to its owner (FR-D5): a record, not a workflow, deduplicated per
 (topic, stale document, winner) so repeated retrievals do not re-flag the same fact.
+
+**Evals are cases → runs, and the gate reads the run.** An `eval_case` carries
+everything needed to *execute* it, not just describe it: the exact `input` the runner
+sends (an invoice id from the seeded ERP, or E-19's policy question), the expected
+action, the citations that must appear, and the tools that must not. A suite run
+(`app/evals/runner.py`) starts one real `runs` row per case — trigger `eval`, scored
+from the run's own append-only events, against a private per-case ERP so the demo's
+state is never disturbed — and records the verdict in `eval_runs.passed`. That boolean
+is what `POST /agents/{id}/versions/{version}/publish` demands (FR-F2): a completed,
+passing eval run for exactly this version and exactly the suite its DNA declares, with
+the winning run kept on `agent_versions.published_eval_run_id` as the gate's evidence.
+The seed script's directly-published demo versions are the one documented exception,
+visible by that column being null.
 
 ## Open questions
 

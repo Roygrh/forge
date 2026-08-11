@@ -230,9 +230,9 @@ function DnaSummary({ version }: { version: AgentVersion }) {
         {version.published_eval_run_id === null && (
           <p
             className="mt-1.5 text-xs text-amber-700"
-            title="scripts/seed.py publishes this version directly so the runtime has something to execute; the real eval gate arrives in Phase 4.5"
+            title="scripts/seed.py publishes this version directly so a fresh stack has something to execute — the one documented exception to the eval gate. Versions authored through the API earn their publish on the Evals screen."
           >
-            Published by the seed script — no eval gate evidence.
+            Published by the seed script — the documented exception to the eval gate.
           </p>
         )}
       </div>

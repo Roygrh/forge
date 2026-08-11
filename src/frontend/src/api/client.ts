@@ -17,8 +17,11 @@ import type {
   ApprovalDecisionRequest,
   ApprovalStatus,
   AutonomyCandidate,
+  EvalRun,
+  EvalSuite,
   Role,
   Run,
+  RunSuiteRequest,
   RunTrace,
   StartRunRequest,
 } from './types'
@@ -206,6 +209,36 @@ export const api = {
 
   /** Approval rates per action category — read-only, and applied by nothing (FR-E5). */
   getApprovalReport: () => request<AutonomyCandidate[]>('/approvals/report'),
+
+  /** The eval suite catalogue, each with its case count (FR-F1). */
+  listEvalSuites: () => request<EvalSuite[]>('/eval/suites'),
+
+  /**
+   * Run a suite against an agent version. Executes inline: the 202 body already
+   * carries the verdict — per-case results and the `passed` boolean the gate reads.
+   */
+  runEvalSuite: (suiteId: string, body: RunSuiteRequest) =>
+    request<EvalRun>(`/eval/suites/${encodeURIComponent(suiteId)}/run`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Eval runs for one version, newest first — how the gate's state is learned. */
+  listEvalRuns: (agentVersionId: string) =>
+    request<EvalRun[]>(`/eval/runs?agent_version_id=${encodeURIComponent(agentVersionId)}`),
+
+  getEvalRun: (evalRunId: string) => request<EvalRun>(`/eval/runs/${encodeURIComponent(evalRunId)}`),
+
+  /**
+   * Publish a version — the hard eval gate (FR-F2). The server answers 409 with
+   * `publish_gate_unmet` unless this exact version has a completed, passing eval run
+   * for the suite its DNA declares. There is deliberately no force flag to send.
+   */
+  publishVersion: (agentId: string, version: string) =>
+    request<AgentVersion>(
+      `/agents/${encodeURIComponent(agentId)}/versions/${encodeURIComponent(version)}/publish`,
+      { method: 'POST' },
+    ),
 }
 
 export const apiBaseUrl = BASE_URL

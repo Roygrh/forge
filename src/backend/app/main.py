@@ -6,9 +6,9 @@ the read-only agent catalog the SPA lists, and CORS so that SPA can reach the AP
 Phase 4.3 adds the read-only knowledge surface: collections, citable chunks, and the
 remediation queue. Phase 4.4 adds the human in the loop — the approval queue that
 releases a parked action, cancels it, or lets it expire, plus the autonomy-promotion
-report. The rest of the governance surface contracted in
-``docs/02-architecture/api/openapi.yaml`` (agent authoring, evals) arrives in later
-phases.
+report. Phase 4.5 adds the evaluation suite as the publish gate: draft authoring, the
+eval endpoints, and a ``publish`` that answers 409 until the version's declared suite
+has passed (FR-F2).
 """
 
 import asyncio
@@ -25,6 +25,7 @@ from app import __version__
 from app.api import (
     agents_router,
     approvals_router,
+    evals_router,
     install_error_handlers,
     knowledge_router,
     runs_router,
@@ -89,6 +90,7 @@ app.include_router(agents_router, prefix=settings.api_prefix)
 app.include_router(runs_router, prefix=settings.api_prefix)
 app.include_router(approvals_router, prefix=settings.api_prefix)
 app.include_router(knowledge_router, prefix=settings.api_prefix)
+app.include_router(evals_router, prefix=settings.api_prefix)
 
 
 @app.get(

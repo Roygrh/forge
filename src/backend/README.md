@@ -124,11 +124,14 @@ Lint, format, and types:
 | `app/tools/` | The tool registry and gateway — the only path from an agent to a tool (FR-C1) — plus the eight MeridianERP and rule-lookup tools (FR-C4) |
 | `app/runtime/` | The loop ([ADR-003](../../docs/adr/003-custom-agent-runtime.md)), structured-output validation ([ADR-006](../../docs/adr/006-structured-outputs.md)), the trace writer/reader, and the transcript a paused run is resumed from ([ADR-010](../../docs/adr/010-resume-by-replay.md)) |
 | `app/approvals/` | The human-in-the-loop queue: parking, approve/reject, server-side expiry that cancels, the evidence an approver is shown, and the read-only autonomy-promotion report (FR-E1..E5) |
-| `app/api/` | Agent-catalog, run, **approval** and knowledge endpoints, the error shape, and the gateway dependencies |
+| `app/evals/` | The 20 eval cases as data (the executable form of `06-eval-cases.md`) and the runner that scores a version by programmatic asserts — the publish gate's evidence (FR-F1..F3) |
+| `app/api/` | Agent-catalog (read, draft authoring, the **eval-gated publish**), run, **approval**, knowledge and **eval** endpoints, the error shape, and the gateway dependencies |
 | `alembic/` | Migration environment; the URL comes from settings, never from `alembic.ini` |
-| `scripts/seed.py` | Idempotent seed: tenant, the governed rule set, and the published agent definitions |
+| `scripts/seed.py` | Idempotent seed: tenant, the governed rule set, the eval suite, and the published agent definitions |
+| `scripts/run_evals.py` | The one command of FR-F1: runs the suite against a version, prints per-case pass/fail, records the `eval_runs` row the publish gate reads, exits non-zero on failure |
 | `scripts/demo_hitl.py` | Drives the approval queue over the real HTTP surface and prints both traces: one parked-approved-resumed-executed, one parked-expired-canceled |
-| `tests/` | Health, config, models, append-only, DNA contract, both gateways, output validation, the rule layer, **governance** (autonomy matrix, fail-closed matrix, hard limits, SoD), the AP agents end to end, the catalog, the runtime, and **approvals** (approve/reject/expire, granularity, segregation of duties, and the absence of any extend operation) |
+| `scripts/demo_publish_gate.py` | Drives the publish gate over the real HTTP surface: a draft refused with 409, the suite passing 20/20, the same publish succeeding with its evidence |
+| `tests/` | Health, config, models, append-only, DNA contract, both gateways, output validation, the rule layer, **governance** (autonomy matrix, fail-closed matrix, hard limits, SoD), the AP agents end to end, the catalog, the runtime, **approvals** (approve/reject/expire, granularity, segregation of duties, and the absence of any extend operation), and **evals** (the 20 cases green, the hard 409, the gate's honesty against a restricted definition) |
 
 ## Notes for reviewers
 

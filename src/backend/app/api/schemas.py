@@ -15,6 +15,8 @@ from app.approvals import ApprovalRecord, CategoryStats, why_approval_is_require
 from app.models import (
     Agent,
     AgentVersion,
+    EvalRun,
+    EvalSuite,
     KnowledgeChunk,
     KnowledgeCollection,
     RemediationItem,
@@ -86,6 +88,19 @@ class AgentVersionResponse(BaseModel):
             published_at=version.published_at,
             created_at=version.created_at,
         )
+
+
+class CreateAgentVersion(BaseModel):
+    """Body of ``POST /agents/{agentId}/versions``: one complete DNA document.
+
+    The version number lives *inside* the document (``identity.version``), not beside
+    it: the DNA is the contract, and a version number that could disagree with its own
+    definition would be two sources of truth (golden rule 1).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dna: dict[str, Any] = Field(description="Validated against dna-schema.json before acceptance")
 
 
 class StartRun(BaseModel):
@@ -385,6 +400,106 @@ class RemediationItemResponse(BaseModel):
             status=item.status,
             detail=item.detail,
             created_at=item.created_at,
+        )
+
+
+# --- Evals (FR-F1..F3) ---------------------------------------------------------
+
+
+class EvalSuiteResponse(BaseModel):
+    """One eval suite in the catalogue, with how many cases it holds."""
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    slug: str
+    name: str
+    version: str = Field(description="Semver of the case set")
+    case_count: int
+    created_at: datetime
+
+    @classmethod
+    def of(cls, suite: EvalSuite, *, case_count: int) -> "EvalSuiteResponse":
+        """Project a suite row onto the API contract."""
+        return cls(
+            id=suite.id,
+            tenant_id=suite.tenant_id,
+            slug=suite.slug,
+            name=suite.name,
+            version=suite.version,
+            case_count=case_count,
+            created_at=suite.created_at,
+        )
+
+
+class RunSuiteRequest(BaseModel):
+    """Body of ``POST /eval/suites/{suiteId}/run``: which version to score."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: uuid.UUID
+    version: str = Field(description="Semver of the version under test")
+
+
+class EvalCheckResult(BaseModel):
+    """One programmatic assert of one case (FR-F3)."""
+
+    name: str
+    passed: bool
+    detail: str
+
+
+class EvalCaseResult(BaseModel):
+    """One scored case: expected vs actual, and every check behind the verdict."""
+
+    code: str = Field(description="Case code, e.g. E-14")
+    scenario: str
+    passed: bool
+    expected_action: str
+    actual_action: str | None = Field(
+        default=None, description="Null when the run reached no decision"
+    )
+    expected_citations: list[str]
+    actual_citations: list[str]
+    must_not_call: list[str]
+    tools_called: list[str]
+    run_id: uuid.UUID = Field(description="The real run this case executed — its trace is live")
+    run_status: str
+    detail: str = Field(description="Why the case failed, or `ok`")
+    checks: list[EvalCheckResult]
+
+
+class EvalRunResponse(BaseModel):
+    """One scoring of one suite against one agent version — the gate's evidence."""
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    suite_id: uuid.UUID
+    agent_version_id: uuid.UUID
+    status: str = Field(description="running | completed")
+    passed: bool | None = Field(default=None, description="The publish-gate verdict (FR-F2)")
+    total: int | None = None
+    passed_count: int | None = None
+    case_results: list[EvalCaseResult] | None = None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, eval_run: EvalRun) -> "EvalRunResponse":
+        """Project an eval-run row onto the API contract."""
+        return cls(
+            id=eval_run.id,
+            tenant_id=eval_run.tenant_id,
+            suite_id=eval_run.suite_id,
+            agent_version_id=eval_run.agent_version_id,
+            status=eval_run.status,
+            passed=eval_run.passed,
+            total=eval_run.total,
+            passed_count=eval_run.passed_count,
+            case_results=(
+                [EvalCaseResult.model_validate(case) for case in eval_run.case_results]
+                if eval_run.case_results is not None
+                else None
+            ),
+            created_at=eval_run.created_at,
         )
 
 

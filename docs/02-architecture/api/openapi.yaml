@@ -122,14 +122,21 @@ paths:
       summary: Publish a version (hard eval gate)
       description: >-
         Transitions draft to published ONLY if the version has a completed eval
-        run with passed=true for its declared suite (FR-F2). If the gate has not
-        passed, the server returns 409 and does not publish. The gate cannot be
-        bypassed. Requires the configurator role.
+        run with passed=true for the suite its own DNA declares
+        (evals.suite_ref) — a run of a different version or a different suite
+        satisfies nothing (FR-F2). If the gate has not passed, the server
+        returns 409 with code publish_gate_unmet and does not publish. The gate
+        cannot be bypassed: there is no force flag and no other route to
+        status=published. (The seed script's directly-published demo versions
+        are the one documented exception, marked by a null
+        published_eval_run_id.) Requires the configurator role.
       parameters:
         - $ref: '#/components/parameters/RoleHeader'
       responses:
         '200':
-          description: Version published
+          description: >-
+            Version published. published_eval_run_id records the passing run
+            that satisfied the gate — the evidence travels with the version.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AgentVersion' }
@@ -137,8 +144,11 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: >-
-            Publish gate not satisfied — the eval suite has not passed for this
-            version. The version remains in draft.
+            Publish gate not satisfied (code publish_gate_unmet) — no completed
+            eval run, a failed one, or a declared suite that is not installed;
+            the version remains in draft. Also answered (code
+            version_not_draft) when the version is already published or
+            suspended: only a draft can be published.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -147,7 +157,10 @@ paths:
                 message: Eval suite has not passed for this version
                 details:
                   suite_ref: meridian-ap-eval-suite@1.0.0
+                  latest_eval_run_id: null
                   latest_eval_run_passed: false
+                  passed_count: 17
+                  total: 20
 
   /agents/{agentId}/versions/{version}/suspend:
     parameters:
@@ -524,6 +537,30 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /eval/runs:
+    get:
+      tags: [Evals]
+      summary: List eval runs, optionally for one agent version
+      description: >-
+        Newest first. agent_version_id narrows the list to one version — the
+        query a client asks to learn whether that version's publish gate is met
+        before offering the publish action.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+        - name: agent_version_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Eval runs, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EvalRun' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /eval/runs/{evalRunId}:
     parameters:
@@ -1247,6 +1284,7 @@ components:
         name: { type: string }
         version: { type: string, description: semver }
         case_count: { type: integer }
+        created_at: { type: string, format: date-time }
 
     RunSuiteRequest:
       type: object
@@ -1264,18 +1302,65 @@ components:
         suite_id: { type: string, format: uuid }
         agent_version_id: { type: string, format: uuid }
         status: { type: string, enum: [running, completed] }
-        passed: { type: [boolean, 'null'], description: Publish-gate result }
+        passed:
+          type: [boolean, 'null']
+          description: >-
+            The publish-gate verdict (FR-F2): true only when every case passed.
+            Null while the run is still executing. An empty suite never passes —
+            a gate satisfied by zero evidence is no gate.
         total: { type: integer }
         passed_count: { type: integer }
         case_results:
           type: array
+          items: { $ref: '#/components/schemas/EvalCaseResult' }
+        created_at: { type: string, format: date-time }
+
+    EvalCaseResult:
+      type: object
+      description: >-
+        One scored case: expected vs actual, and every programmatic check
+        behind the verdict (FR-F3). Each case executed a real run of the
+        version under test, so run_id resolves to a live, inspectable trace.
+      required: [code, passed, expected_action, run_id, checks]
+      properties:
+        code: { type: string, description: Case code, e.g. E-14 }
+        scenario: { type: string }
+        passed: { type: boolean }
+        expected_action: { type: string }
+        actual_action:
+          type: [string, 'null']
+          description: Null when the run reached no decision
+        expected_citations:
+          type: array
+          items: { type: string }
+          description: Citations the case requires — a subset of what was cited
+        actual_citations:
+          type: array
+          items: { type: string }
+        must_not_call:
+          type: array
+          items: { type: string }
+          description: Tool names that must never appear in the trace, any status
+        tools_called:
+          type: array
+          items: { type: string }
+        run_id:
+          type: string
+          format: uuid
+          description: The real run this case executed — its trace is servable
+        run_status: { type: string }
+        detail: { type: string, description: Why the case failed, or `ok` }
+        checks:
+          type: array
+          description: >-
+            The individual asserts — final_action, citations, must_not_call,
+            no_unapproved_write, budgets, trace — each with its own verdict.
           items:
             type: object
+            required: [name, passed, detail]
             properties:
-              code: { type: string, description: Case code, e.g. E-14 }
+              name: { type: string }
               passed: { type: boolean }
-              expected_action: { type: string }
-              actual_action: { type: string }
               detail: { type: string }
 
     Tool:

@@ -2,12 +2,15 @@
 
 React 18 · Vite · TypeScript (strict) · Tailwind ([ADR-007](../../docs/adr/007-frontend-react-vite.md))
 
-**Scope:** three screens — the agent catalog, the **approval queue**, and the run trace
-viewer. Phase 4.1 filled the first with the real accounts-payable agents; Phase 4.4 adds
-the second, where a person releases or refuses an action a run has parked, with the
-evidence to decide it on the same screen. Agent authoring and the knowledge and eval
-screens are still deliberately absent — there is nothing behind them yet, and a screen
-that cannot enforce what it displays is worse than no screen.
+**Scope:** four screens — the agent catalog, the **approval queue**, the run trace
+viewer, and the **eval suite with its publish gate**. Phase 4.1 filled the first with
+the real accounts-payable agents; Phase 4.4 added the queue, where a person releases or
+refuses an action a run has parked, with the evidence to decide it on the same screen;
+Phase 4.5 adds the Evals screen, where a version is scored against the 20 cases and the
+publish action is disabled — with its reason — until the gate is met. Full agent
+authoring and the knowledge screens are still deliberately absent — there is nothing
+behind them yet, and a screen that cannot enforce what it displays is worse than no
+screen.
 
 ## Run it
 
@@ -108,6 +111,8 @@ Endpoints consumed, all read-only except the one that starts a run:
 | `GET /runs/{id}` · `GET /runs/{id}/trace` | Run view: header, timeline, raw events |
 | `GET /approvals` · `POST /approvals/{id}/approve` · `POST /approvals/{id}/reject` | The queue, and the two decisions there are |
 | `GET /approvals/report` | The autonomy-promotion report, read-only (FR-E5) |
+| `GET /eval/suites` · `POST /eval/suites/{id}/run` · `GET /eval/runs?agent_version_id=` | Evals: the suite, running it, and the gate's state per version |
+| `POST /agents/{id}/versions/{v}/publish` | The publish action — answered 409 by the server while the gate is unmet (FR-F2) |
 
 ## Layout
 
@@ -115,10 +120,11 @@ Endpoints consumed, all read-only except the one that starts a run:
 |---|---|
 | `src/api/types.ts` | The API shapes, mirrored from `openapi.yaml` and `app/api/schemas.py` |
 | `src/api/client.ts` | The single path to the API: base URL, role header, typed errors |
-| `src/App.tsx` | Three routes over `window.location.hash`: `#/`, `#/approvals`, `#/runs/<id>` |
+| `src/App.tsx` | Four routes over `window.location.hash`: `#/`, `#/approvals`, `#/evals`, `#/runs/<id>` |
 | `src/screens/AgentsScreen.tsx` | The catalog: each agent's model, tool grants, guardrails, and a Run button |
 | `src/screens/RunScreen.tsx` | One run: outcome header, timeline, raw events |
 | `src/screens/ApprovalsScreen.tsx` | The queue: proposed action, rules in play, evidence, Approve/Reject, and the read-only promotion report |
+| `src/screens/EvalsScreen.tsx` | The suite, per-case expected-vs-actual with every assert, and the publish action with the gate's state said in words |
 | `src/components/Timeline.tsx` | The ordered steps — reason, tool, decision, the platform’s own **blocked** step, and a person’s **approval** — each rendered for what it is |
 | `src/components/RawEvents.tsx` | The append-only log the timeline was projected from (ADR-008) |
 | `src/components/Pill.tsx` | The badge vocabulary: one colour per state, exhaustive over the contract's unions |
@@ -148,9 +154,12 @@ Endpoints consumed, all read-only except the one that starts a run:
 - **Money is never parsed.** `total_cost_usd` and per-step `cost_usd` arrive as exact
   decimal strings and are prefixed with `$`, never passed through `Number()`. Rounding an
   audit figure through a float is the thing the backend went out of its way to avoid.
-- **The badge vocabulary is exhaustive over the contract's unions.** `Pill.tsx` maps every
-  run status, tool status, autonomy level and decision action with `Record<Union, Tone>`,
-  so adding a state to the backend breaks the build here instead of rendering it grey.
+- **The badge vocabulary is exhaustive over the contract's unions — and safe beyond
+  them.** `Pill.tsx` maps every run status, tool status, autonomy level and decision
+  action with `Record<Union, Tone>`, so adding a state to the backend breaks the build
+  here instead of rendering it grey. At runtime the lookups go through `toneFor` /
+  `meaningFor`, so a value served by a newer backend than this build still renders as
+  itself on a neutral badge — an unmapped state must never blank audit material.
 - **Types are hand-written, for now.** ADR-007 calls for generating them from the OpenAPI
   document in CI. The consumed surface is five shapes; a generator in the build is a thing
   to maintain before there is anything to keep in sync. `src/api/types.ts` cites the
