@@ -40,6 +40,7 @@ from app.approvals import (
 from app.db import SessionDep
 from app.governance import GovernanceReason, Permission, explain
 from app.models import Event
+from app.observability import evaluate_circuit_breaker
 
 router = APIRouter(tags=["Approvals"])
 
@@ -122,6 +123,10 @@ async def approve(
         record = await queue.approve(approval_id, actor=actor.identity, note=note)
     except ApprovalError as exc:
         raise _as_api_error(exc) from exc
+    # The released run has reached a terminal state of its own; a resumed run counts
+    # toward the same trailing window as any other, so the breaker is judged here too
+    # (FR-G4).
+    await evaluate_circuit_breaker(session, record.agent_version, now=queue.now())
     return ApprovalResponse.of(record, now=queue.now())
 
 

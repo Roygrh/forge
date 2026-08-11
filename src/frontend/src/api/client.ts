@@ -11,6 +11,7 @@
 import { ROLES } from './types'
 import type {
   Agent,
+  AgentMetrics,
   AgentVersion,
   ApiErrorBody,
   Approval,
@@ -19,11 +20,14 @@ import type {
   AutonomyCandidate,
   EvalRun,
   EvalSuite,
+  MetricsReport,
+  ResumeVersionRequest,
   Role,
   Run,
   RunSuiteRequest,
   RunTrace,
   StartRunRequest,
+  SuspendVersionRequest,
 } from './types'
 
 /**
@@ -238,6 +242,32 @@ export const api = {
     request<AgentVersion>(
       `/agents/${encodeURIComponent(agentId)}/versions/${encodeURIComponent(version)}/publish`,
       { method: 'POST' },
+    ),
+
+  /**
+   * The dashboard (FR-G3): every agent's metrics plus the overall picture, projected
+   * from the append-only event log at request time — never a counters table.
+   */
+  getMetrics: () => request<MetricsReport>('/metrics'),
+
+  getAgentMetrics: (agentId: string) =>
+    request<AgentMetrics>(`/agents/${encodeURIComponent(agentId)}/metrics`),
+
+  /** Halt a published version, on the record. Needs `agent.suspend`. */
+  suspendVersion: (agentId: string, version: string, body: SuspendVersionRequest = {}) =>
+    request<AgentVersion>(
+      `/agents/${encodeURIComponent(agentId)}/versions/${encodeURIComponent(version)}/suspend`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /**
+   * The one way out of a suspension (FR-G4). Needs `agent.resume`, which only the
+   * admin role holds — the server refuses every other hat, and records the attempt.
+   */
+  resumeVersion: (agentId: string, version: string, body: ResumeVersionRequest = {}) =>
+    request<AgentVersion>(
+      `/agents/${encodeURIComponent(agentId)}/versions/${encodeURIComponent(version)}/resume`,
+      { method: 'POST', body: JSON.stringify(body) },
     ),
 }
 

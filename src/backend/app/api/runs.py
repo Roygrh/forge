@@ -23,6 +23,7 @@ from app.api.schemas import RunResponse, RunTraceResponse, StartRun
 from app.db import SessionDep
 from app.governance import GovernanceReason, Permission, explain
 from app.models import AgentVersion, Event, Run
+from app.observability import evaluate_circuit_breaker, latest_suspensions, record_run_refusal
 from app.runtime.loop import AgentRuntime
 from app.runtime.trace import load_events, project_trace
 
@@ -89,6 +90,35 @@ async def start_run(
         await session.commit()
         actor.require(Permission.RUN_START)
 
+    if agent_version.status == "suspended":
+        # Containment holding the line (FR-G4). The refusal is a governance fact with
+        # the machine-readable code, appended before the 409 goes out: a suspended
+        # agent's refusals must be visible in the log, not just absent from it.
+        suspension = (await latest_suspensions(session, [agent_version.id])).get(agent_version.id)
+        await record_run_refusal(
+            session,
+            agent_version,
+            actor=actor.identity,
+            detail=(
+                f"run of {body.agent_id}@{body.version} refused: the version is suspended"
+                + (
+                    f" ({suspension.payload.get('detail')})"
+                    if suspension is not None and suspension.payload.get("detail")
+                    else ""
+                )
+            ),
+        )
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "agent_suspended",
+            explain(GovernanceReason.AGENT_SUSPENDED),
+            {
+                "reason_code": str(GovernanceReason.AGENT_SUSPENDED),
+                "status": agent_version.status,
+                "suspension": dict(suspension.payload) if suspension is not None else None,
+            },
+        )
+
     if agent_version.status != "published":
         raise ApiError(
             status.HTTP_409_CONFLICT,
@@ -104,6 +134,10 @@ async def start_run(
         trigger="api",
         actor=actor.identity,
     )
+    # The run is terminal; judge the trailing window before answering (FR-G4). If this
+    # run is the one that tips the rate or the spend over its threshold, the version is
+    # suspended here — recorded, and already refusing by the caller's next request.
+    await evaluate_circuit_breaker(session, agent_version, now=clock())
     return RunResponse.of(run)
 
 

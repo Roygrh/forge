@@ -8,6 +8,7 @@ secret ever lives in code or in a migration.
 credential exists (ADR-005), and nothing in the platform runs without it.
 """
 
+from decimal import Decimal
 from functools import lru_cache
 from typing import Annotated
 
@@ -37,6 +38,17 @@ class Settings(BaseSettings):
     # it needs none for the LLM. A learned-embedding provider is registered there and
     # named here; an unknown name refuses to start retrieval rather than falling back.
     embedding_provider: str = "hashing"
+
+    # The circuit breaker (FR-G4, app/observability/containment.py). Evaluated over the
+    # trailing window each time one of an agent's runs reaches a terminal state; either
+    # threshold trips it and the published version is suspended on the record. The rate
+    # is only judged once the window holds `breaker_min_runs` finished runs — two bad
+    # runs out of two is not yet a pattern — but the cost ceiling has no such floor,
+    # because one absurdly expensive run is already the incident.
+    breaker_window_seconds: int = 3600
+    breaker_min_runs: int = 5
+    breaker_max_failure_rate: float = 0.5
+    breaker_max_cost_usd: Decimal = Decimal("2.50")
 
     # The SPA (ADR-007) is served from its own origin — Vite's dev server locally, a
     # separate container in compose (ADR-009) — so the browser needs these allowed

@@ -19,6 +19,7 @@ tags:
   - name: Approvals
   - name: Knowledge
   - name: Evals
+  - name: Metrics
   - name: Tools
 
 paths:
@@ -169,7 +170,13 @@ paths:
     post:
       tags: [Agents]
       summary: Suspend a published version (manual)
-      description: Halts new runs; history is retained. Requires the configurator role.
+      description: >-
+        Halts new runs; history is retained. The transition and its reason are
+        recorded as a version.suspended event, and from the next request on a
+        run of this version is refused with code agent_suspended (the refusal
+        itself recorded as a governance.run_refused event). Needs
+        `agent.suspend`, which the configurator and admin roles hold — stopping
+        an agent is the fail-safe direction. Resuming is not: see /resume.
       parameters:
         - $ref: '#/components/parameters/RoleHeader'
       requestBody:
@@ -179,17 +186,78 @@ paths:
             schema: { $ref: '#/components/schemas/SuspendRequest' }
       responses:
         '200':
-          description: Version suspended
+          description: Version suspended, transition recorded
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AgentVersion' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Version is not in a suspendable state
+          description: >-
+            Version is not published (code version_not_published) — only a
+            published version can be suspended
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /agents/{agentId}/versions/{version}/resume:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+      - $ref: '#/components/parameters/Version'
+    post:
+      tags: [Agents]
+      summary: Resume a suspended version (admin only)
+      description: >-
+        Transitions suspended → published — the one operation that reverses a
+        containment, whether the circuit breaker tripped it (FR-G4) or a person
+        suspended it by hand. Deliberately manual: there is no cool-down, no
+        retry window, and nothing that un-suspends an agent by itself. Needs
+        `agent.resume`, which only the admin role holds and which no role
+        holding `agent.configure` or `agent.publish` may ever hold — whoever
+        built or shipped an agent cannot override the breaker that contained
+        it. The resume is recorded as a version.resumed event with its actor,
+        optional note, and the suspension it overrode.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResumeRequest' }
+      responses:
+        '200':
+          description: Version resumed, transition recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentVersion' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >-
+            Version is not suspended (code version_not_suspended) — only a
+            suspended version can be resumed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /agents/{agentId}/metrics:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      tags: [Metrics]
+      summary: One agent's metrics, lifecycle state, and recent runs
+      description: >-
+        The same projection as /metrics, narrowed to one agent. Needs `read`.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: One agent's dashboard row
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentMetrics' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /runs:
     post:
@@ -212,10 +280,31 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Agent version is not published
+          description: >-
+            The version cannot run. A draft answers code
+            agent_version_not_published. A suspended version answers code
+            agent_suspended with the governance reason code and the recorded
+            suspension in details — and the refusal itself is appended as a
+            governance.run_refused event, so a contained agent's refusals are
+            visible in the log, not just absent from it (FR-G4).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+              example:
+                code: agent_suspended
+                message: >-
+                  This agent is suspended, so the platform refused to start the
+                  run. A suspension never lifts itself: an authorised person
+                  must resume the agent, and both the suspension and the resume
+                  are on the record.
+                details:
+                  reason_code: agent_suspended
+                  status: suspended
+                  suspension:
+                    trigger: circuit_breaker
+                    detail: >-
+                      circuit breaker tripped: 4 of 6 finished run(s) in the
+                      last 3600s faulted (rate 0.667, threshold 0.500)
 
   /runs/{runId}:
     parameters:
@@ -578,6 +667,29 @@ paths:
               schema: { $ref: '#/components/schemas/EvalRun' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /metrics:
+    get:
+      tags: [Metrics]
+      summary: Per-agent operational metrics plus the overall picture (FR-G3)
+      description: >-
+        The whole dashboard in one request: every agent in the catalog — runs,
+        auto-approval rate, escalation rate, block rate by reason code, average
+        cost/tokens/latency per run — plus the same numbers over all agents.
+        Every figure is a projection of the append-only event log computed at
+        read time; there is no counters table to drift from the audit trail
+        (ADR-008). Each row's recent_runs carries real run ids, so any number
+        on the dashboard resolves back to the traces that produced it (FR-G1).
+        Needs `read`.
+      parameters:
+        - $ref: '#/components/parameters/RoleHeader'
+      responses:
+        '200':
+          description: The metrics report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MetricsReport' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /tools:
     get:
       tags: [Tools]
@@ -604,20 +716,22 @@ components:
       in: header
       required: true
       description: >-
-        Demonstration role for segregation of duties (NFR-5). configurator holds
-        read, agent.configure, agent.publish and run.start; approver holds read
-        and approval.decide; viewer holds read only. No role holds both
-        agent.configure/agent.publish and approval.decide — the person who
-        decides what an agent may do is never the person who approves what it
-        proposes, and the build refuses to start if that ever stops being true.
-        Reading the approval queue needs only read, so an auditor can inspect
-        every decision without being able to make one; approving or rejecting
-        needs approval.decide. A role lacking the permission for an operation
-        gets 403, and the refusal is recorded as a governance.permission_denied
+        Demonstration role for segregation of duties (NFR-5). configurator
+        holds read, agent.configure, agent.publish, agent.suspend and
+        run.start; approver holds read and approval.decide; viewer holds read
+        only; admin holds read, agent.suspend and agent.resume — the
+        containment operator, deliberately not a superuser. No role holds both
+        agent.configure/agent.publish and approval.decide, and none holds both
+        agent.configure/agent.publish and agent.resume: the person who decides
+        what an agent may do is never the person who approves what it proposes,
+        and whoever built or shipped an agent can never override the breaker
+        that contained it. The build refuses to start if either pairing ever
+        stops being true. A role lacking the permission for an operation gets
+        403, and the refusal is recorded as a governance.permission_denied
         event. Not authentication.
       schema:
         type: string
-        enum: [configurator, approver, viewer]
+        enum: [configurator, approver, viewer, admin]
     AgentId:
       name: agentId
       in: path
@@ -752,7 +866,127 @@ components:
     SuspendRequest:
       type: object
       properties:
-        reason: { type: string }
+        reason:
+          type: string
+          description: Why, recorded verbatim in the version.suspended event
+
+    ResumeRequest:
+      type: object
+      properties:
+        note:
+          type: string
+          description: Recorded verbatim in the version.resumed event, with the actor
+
+    MetricsSummary:
+      type: object
+      description: >-
+        The FR-G3 numbers over one population of runs — one agent's, or every
+        agent's. Projected from the append-only event log at read time; nothing
+        here is counted anywhere else (ADR-008). Rates are over finished runs
+        and are null, not zero, when nothing has finished: "no data" and "never
+        happens" must not read the same on a governance dashboard.
+      required: [runs, runs_by_status, finished_runs, runs_refused, blocks_by_reason, total_cost_usd]
+      properties:
+        runs: { type: integer, description: run.started events counted }
+        runs_by_status:
+          type: object
+          additionalProperties: { type: integer }
+          description: Current status per run, from each run's last lifecycle event
+        finished_runs:
+          type: integer
+          description: completed + escalated + canceled + error — the rate denominator
+        runs_refused:
+          type: integer
+          description: >-
+            Starts the platform refused outright (suspended agent). They never
+            became runs, so they sit beside the run counts rather than inside
+            them.
+        auto_approval_rate:
+          type: [number, 'null']
+          description: >-
+            Runs that completed with no human in the loop / finished runs — the
+            fraction the agent handled entirely within its own authority.
+        escalation_rate:
+          type: [number, 'null']
+          description: Runs ending escalated / finished runs
+        block_rate:
+          type: [number, 'null']
+          description: >-
+            Finished runs the platform stopped for a fault / finished runs.
+            Human-in-the-loop codes (approval_required, approval_rejected,
+            approval_expired) are excluded — a person exercising their veto is
+            the control working, not the platform failing. The same definition
+            fuels the circuit breaker (FR-G4).
+        blocks_by_reason:
+          type: object
+          additionalProperties: { type: integer }
+          description: >-
+            governance.blocked events per reason code, every code included —
+            the unfiltered truth beside the filtered rate.
+        avg_tokens_per_run: { type: [number, 'null'] }
+        avg_cost_usd_per_run:
+          type: [string, 'null']
+          description: Exact decimal as a string, like every money field
+        avg_latency_seconds:
+          type: [number, 'null']
+          description: Mean wall-clock seconds from run.started to the terminal event
+        total_cost_usd: { type: string }
+
+    MetricsRunRef:
+      type: object
+      description: >-
+        One recent run on the dashboard. run_id resolves to the full trace at
+        /runs/{runId}/trace, which is what makes every dashboard figure
+        auditable rather than merely believable.
+      required: [run_id, agent, status, started_at]
+      properties:
+        run_id: { type: string, format: uuid }
+        agent: { type: string, description: slug@semver of the version that ran }
+        status: { type: string }
+        reason:
+          type: [string, 'null']
+          description: The terminal reason code, when the run ended with one
+        total_cost_usd: { type: [string, 'null'] }
+        started_at: { type: string, format: date-time }
+
+    AgentMetrics:
+      type: object
+      description: One agent's dashboard row — identity, lifecycle state, numbers, recent runs
+      required: [agent_id, slug, name, state, metrics, recent_runs]
+      properties:
+        agent_id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: string }
+        state:
+          type: string
+          enum: [draft, published, suspended]
+          description: >-
+            Summarised across the agent's versions — suspended if any version
+            is suspended, else published if any is live, else draft.
+        suspension:
+          type: [object, 'null']
+          additionalProperties: true
+          description: >-
+            The latest version.suspended event's payload when suspended —
+            trigger (circuit_breaker or manual), the detail sentence, and the
+            breaker's numbers (metric, observed, threshold, window) when the
+            breaker tripped it. Verbatim from the append-only log: the
+            explanation of a suspension is the recorded fact of it.
+        metrics: { $ref: '#/components/schemas/MetricsSummary' }
+        recent_runs:
+          type: array
+          items: { $ref: '#/components/schemas/MetricsRunRef' }
+
+    MetricsReport:
+      type: object
+      description: The whole dashboard — every agent in the catalog, and the same numbers overall
+      required: [generated_at, overall, agents]
+      properties:
+        generated_at: { type: string, format: date-time }
+        overall: { $ref: '#/components/schemas/MetricsSummary' }
+        agents:
+          type: array
+          items: { $ref: '#/components/schemas/AgentMetrics' }
 
     StartRun:
       type: object
@@ -824,7 +1058,11 @@ components:
             is recorded against `system`, because expiry is the absence of a
             decision rather than one. Outside a run,
             governance.permission_denied records an operation refused to a role
-            that lacked its permission.
+            that lacked its permission; governance.run_refused records a start
+            refused because the version is suspended (no run exists); and
+            version.suspended / version.resumed record the containment
+            lifecycle itself — who or what stopped an agent, and who put it
+            back (FR-G4).
         actor: { type: string, description: system, seed-script, or role:<role> }
         occurred_at: { type: string, format: date-time }
         payload:
@@ -990,6 +1228,7 @@ components:
         - timeout
         - budget_exceeded
         - daily_budget_exceeded
+        - agent_suspended
         - provider_unavailable
         - unsupported_definition
         - agent_decision

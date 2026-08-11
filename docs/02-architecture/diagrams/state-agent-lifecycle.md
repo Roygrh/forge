@@ -13,7 +13,8 @@ stateDiagram-v2
     draft --> published : publish — eval suite PASSES (gate, FR-F1/FR-F2)
     draft --> draft : publish DENIED — eval suite fails (fail closed)
     published --> suspended : circuit breaker trips (error/cost window, FR-G4)
-    published --> suspended : manual suspend (admin)
+    published --> suspended : manual suspend (configurator or admin)
+    suspended --> published : manual resume (admin only, recorded)
     suspended --> draft : rebuild as new version (FR-A4)
     note right of published
         Hard publish gate: a version that fails its
@@ -22,8 +23,9 @@ stateDiagram-v2
     end note
     note right of suspended
         Suspend halts runs, history is retained.
-        Rebuild forks a NEW draft version — the prior
-        version is never edited in place.
+        Resume needs agent.resume (admin only) and is
+        recorded; rebuild forks a NEW draft version —
+        the prior version is never edited in place.
     end note
 ```
 
@@ -37,9 +39,14 @@ stateDiagram-v2
   self/return transitions always produce a *new* draft (semver bump), never mutate a
   published one (FR-A3, DNA versioning philosophy).
 - **Two independent suspend triggers** — automatic (circuit breaker on error/cost,
-  FR-G4) and manual (admin). Both halt runs while retaining history.
-- **The way back is rebuild, not un-publish** — `suspended → draft` reflects Jeff's
-  "start/stop/destroy/rebuild" lifecycle (FR-A4); there is no in-place resurrection of
-  a suspended version.
+  FR-G4) and manual (`agent.suspend`, held by configurator and admin). Both halt runs
+  while retaining history, and both are recorded as `version.suspended` events.
+- **Two ways back, for two different problems** — `suspended → published` is a manual
+  **resume**, held only by the admin role and structurally denied to whoever configures
+  or publishes agents (NFR-5 applied to containment): the version already passed its
+  eval gate, and what tripped was an operational threshold, not the definition. When
+  the definition itself is at fault, the way back is **rebuild**: `suspended → draft`
+  forks a new version through the eval gate (Jeff's "start/stop/destroy/rebuild",
+  FR-A4). A suspended version is never edited in place, and nothing resumes by itself.
 - **Transitions are events** — each state change is an appended lifecycle event, so the
   agent's history is itself reconstructable from the log (ADR-008).

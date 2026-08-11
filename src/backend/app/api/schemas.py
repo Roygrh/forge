@@ -22,6 +22,7 @@ from app.models import (
     RemediationItem,
     Run,
 )
+from app.observability import AgentMetrics
 from app.runtime.trace import TraceEvent, TraceStep
 
 RunStatus = Literal["running", "awaiting_approval", "completed", "escalated", "canceled", "error"]
@@ -501,6 +502,99 @@ class EvalRunResponse(BaseModel):
             ),
             created_at=eval_run.created_at,
         )
+
+
+class MetricsSummaryResponse(BaseModel):
+    """The FR-G3 numbers over one population of runs — one agent's, or everyone's.
+
+    Every figure is a projection of the append-only event log at read time; nothing here
+    is counted anywhere else (ADR-008). Rates are over finished runs and are null, not
+    zero, when nothing has finished — "no data" and "never happens" must not read alike.
+    """
+
+    runs: int
+    runs_by_status: dict[str, int]
+    finished_runs: int
+    runs_refused: int = Field(
+        description="Starts refused outright (suspended agent) — never became runs"
+    )
+    auto_approval_rate: float | None = Field(
+        default=None, description="Completed with no human in the loop / finished runs"
+    )
+    escalation_rate: float | None = None
+    block_rate: float | None = Field(
+        default=None,
+        description="Finished runs the platform stopped for a fault; human vetoes excluded",
+    )
+    blocks_by_reason: dict[str, int] = Field(
+        description="governance.blocked events per reason code, human-loop codes included"
+    )
+    avg_tokens_per_run: float | None = None
+    avg_cost_usd_per_run: str | None = Field(
+        default=None, description="Exact decimal as a string, like every money field"
+    )
+    avg_latency_seconds: float | None = None
+    total_cost_usd: str
+
+
+class MetricsRunRef(BaseModel):
+    """One recent run on the dashboard, resolvable to its full trace."""
+
+    run_id: uuid.UUID
+    agent: str = Field(description="slug@semver of the version that ran")
+    status: str
+    reason: str | None = None
+    total_cost_usd: str | None = None
+    started_at: datetime
+
+
+class AgentMetricsResponse(BaseModel):
+    """One agent's dashboard row: identity, lifecycle state, numbers, recent runs."""
+
+    agent_id: uuid.UUID
+    slug: str
+    name: str
+    state: Literal["draft", "published", "suspended"] = Field(
+        description="suspended if any version is; else published if any is; else draft"
+    )
+    suspension: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The latest version.suspended event when suspended — trigger, detail, and "
+            "the breaker's numbers, verbatim from the log"
+        ),
+    )
+    metrics: MetricsSummaryResponse
+    recent_runs: list[MetricsRunRef]
+
+    @classmethod
+    def of(cls, row: AgentMetrics) -> "AgentMetricsResponse":
+        """Project one aggregated row onto the API contract."""
+        return cls.model_validate(row.as_json())
+
+
+class MetricsReportResponse(BaseModel):
+    """The whole dashboard: every agent in the catalog, and the same numbers overall."""
+
+    generated_at: datetime
+    overall: MetricsSummaryResponse
+    agents: list[AgentMetricsResponse]
+
+
+class SuspendVersionRequest(BaseModel):
+    """Body of the manual suspend: why, for the record."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, description="Recorded verbatim in the event")
+
+
+class ResumeVersionRequest(BaseModel):
+    """Body of resume: a note, recorded with the actor who overrode the suspension."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(default=None, description="Recorded verbatim in the event")
 
 
 class ErrorResponse(BaseModel):

@@ -8,7 +8,9 @@ remediation queue. Phase 4.4 adds the human in the loop — the approval queue t
 releases a parked action, cancels it, or lets it expire, plus the autonomy-promotion
 report. Phase 4.5 adds the evaluation suite as the publish gate: draft authoring, the
 eval endpoints, and a ``publish`` that answers 409 until the version's declared suite
-has passed (FR-F2).
+has passed (FR-F2). Phase 4.6 adds observability and containment: per-agent metrics
+derived from the event log (FR-G3), and the circuit breaker with its admin-only resume
+(FR-G4).
 """
 
 import asyncio
@@ -28,6 +30,7 @@ from app.api import (
     evals_router,
     install_error_handlers,
     knowledge_router,
+    metrics_router,
     runs_router,
 )
 from app.config import get_settings
@@ -91,6 +94,7 @@ app.include_router(runs_router, prefix=settings.api_prefix)
 app.include_router(approvals_router, prefix=settings.api_prefix)
 app.include_router(knowledge_router, prefix=settings.api_prefix)
 app.include_router(evals_router, prefix=settings.api_prefix)
+app.include_router(metrics_router, prefix=settings.api_prefix)
 
 
 @app.get(

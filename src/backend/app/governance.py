@@ -105,6 +105,12 @@ class GovernanceReason(StrEnum):
 
     # --- Platform ------------------------------------------------------------
 
+    AGENT_SUSPENDED = "agent_suspended"
+    """This agent version is suspended — by the circuit breaker (FR-G4) or by hand —
+    and a suspended version does not run. New runs are refused with this code and the
+    refusal is recorded; nothing about a suspension expires or lifts itself. The only
+    way back is a person with the ``agent.resume`` permission saying so, on the record."""
+
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     """The DNA names a provider or model the gateway cannot serve or meter."""
 
@@ -191,6 +197,11 @@ REASON_EXPLANATION: dict[GovernanceReason, str] = {
         "This agent has already spent its daily ceiling. No further runs start until "
         "tomorrow, so one misbehaving agent cannot run up a bill."
     ),
+    GovernanceReason.AGENT_SUSPENDED: (
+        "This agent is suspended, so the platform refused to start the run. A "
+        "suspension never lifts itself: an authorised person must resume the agent, "
+        "and both the suspension and the resume are on the record."
+    ),
     GovernanceReason.PROVIDER_UNAVAILABLE: (
         "The model provider this agent is configured for could not be reached or "
         "metered. The run stopped rather than falling back to something else."
@@ -246,6 +257,12 @@ class Role(StrEnum):
     VIEWER = "viewer"
     """Reads. The audit trail is meant to be readable by people who cannot touch it."""
 
+    ADMIN = "admin"
+    """Operates the containment controls (FR-G4): suspends an agent, and is the only
+    role that can resume one. Deliberately *not* a superuser — it configures nothing and
+    publishes nothing, because the person who un-contains an agent must not be the
+    person who built it or shipped it."""
+
 
 class Permission(StrEnum):
     """One capability of the API, granted to roles rather than to endpoints."""
@@ -253,6 +270,8 @@ class Permission(StrEnum):
     READ = "read"
     AGENT_CONFIGURE = "agent.configure"
     AGENT_PUBLISH = "agent.publish"
+    AGENT_SUSPEND = "agent.suspend"
+    AGENT_RESUME = "agent.resume"
     RUN_START = "run.start"
     APPROVAL_DECIDE = "approval.decide"
 
@@ -268,10 +287,15 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             # Starting a run is an operator action, not an approval: it proposes work,
             # it does not sign anything off.
             Permission.RUN_START,
+            # Suspending is the fail-safe direction — it stops things — so the person
+            # who configures an agent may also pull its plug. Resuming is the risk
+            # direction, and is deliberately not here.
+            Permission.AGENT_SUSPEND,
         }
     ),
     Role.APPROVER: frozenset({Permission.READ, Permission.APPROVAL_DECIDE}),
     Role.VIEWER: frozenset({Permission.READ}),
+    Role.ADMIN: frozenset({Permission.READ, Permission.AGENT_SUSPEND, Permission.AGENT_RESUME}),
 }
 
 #: Pairs of permissions that no single role may hold at once. This is NFR-5 written as
@@ -281,6 +305,11 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
 INCOMPATIBLE_DUTIES: tuple[tuple[Permission, Permission], ...] = (
     (Permission.AGENT_CONFIGURE, Permission.APPROVAL_DECIDE),
     (Permission.AGENT_PUBLISH, Permission.APPROVAL_DECIDE),
+    # Containment works the same way: whoever authored or shipped an agent must not be
+    # able to override the breaker that contained it (FR-G4). Resuming a suspended
+    # agent is a second pair of hands, structurally.
+    (Permission.AGENT_CONFIGURE, Permission.AGENT_RESUME),
+    (Permission.AGENT_PUBLISH, Permission.AGENT_RESUME),
 )
 
 

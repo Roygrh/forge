@@ -20,11 +20,18 @@ from sqlalchemy import select
 
 from app.api.deps import Actor, ActorDep
 from app.api.errors import ApiError
-from app.api.schemas import AgentResponse, AgentVersionResponse, CreateAgentVersion
+from app.api.schemas import (
+    AgentResponse,
+    AgentVersionResponse,
+    CreateAgentVersion,
+    ResumeVersionRequest,
+    SuspendVersionRequest,
+)
 from app.db import SessionDep
 from app.dna import DnaValidationError, validate_dna
 from app.governance import GovernanceReason, Permission, explain
 from app.models import Agent, AgentVersion, EvalRun, EvalSuite, Event
+from app.observability import resume_version, suspend_version
 
 router = APIRouter(tags=["Agents"])
 
@@ -278,6 +285,96 @@ async def publish_agent_version(
         )
     )
     await session.commit()
+    return AgentVersionResponse.of(row)
+
+
+@router.post(
+    "/agents/{agent_id}/versions/{version}/suspend",
+    response_model=AgentVersionResponse,
+    summary="Suspend a published version (manual)",
+)
+async def suspend_agent_version(
+    agent_id: uuid.UUID,
+    version: str,
+    session: SessionDep,
+    actor: ActorDep,
+    body: SuspendVersionRequest | None = None,
+) -> AgentVersionResponse:
+    """Transition published → suspended by hand, on the record (FR-A4, FR-G4).
+
+    The fail-safe direction: it stops things, so both the configurator and the admin
+    hold it. New runs of the version are refused with ``agent_suspended`` from the next
+    request on, and the suspension — who, when, why — is an appended event.
+    """
+    row = await _load_version(session, agent_id, version)
+    await _require_recorded(
+        session,
+        actor,
+        Permission.AGENT_SUSPEND,
+        operation="version.suspend",
+        tenant_id=row.tenant_id,
+        agent_version_id=row.id,
+        detail=f"role {actor.role} attempted to suspend {agent_id}@{version}",
+    )
+
+    if row.status != "published":
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "version_not_published",
+            f"version {version} is {row.status}; only a published version can be suspended",
+            {"status": row.status},
+        )
+
+    reason = body.reason if body is not None else None
+    await suspend_version(
+        session,
+        row,
+        actor=actor.identity,
+        trigger="manual",
+        detail=reason or f"suspended manually by {actor.identity}",
+    )
+    return AgentVersionResponse.of(row)
+
+
+@router.post(
+    "/agents/{agent_id}/versions/{version}/resume",
+    response_model=AgentVersionResponse,
+    summary="Resume a suspended version (admin only)",
+)
+async def resume_agent_version(
+    agent_id: uuid.UUID,
+    version: str,
+    session: SessionDep,
+    actor: ActorDep,
+    body: ResumeVersionRequest | None = None,
+) -> AgentVersionResponse:
+    """Transition suspended → published — the only way out of a suspension.
+
+    Needs ``agent.resume``, which only the admin role holds and which no role holding
+    ``agent.configure`` or ``agent.publish`` may ever hold: whoever built or shipped an
+    agent cannot override the breaker that contained it. There is no automatic path —
+    no cool-down, no retry window — and the resume is recorded with its actor and note.
+    """
+    row = await _load_version(session, agent_id, version)
+    await _require_recorded(
+        session,
+        actor,
+        Permission.AGENT_RESUME,
+        operation="version.resume",
+        tenant_id=row.tenant_id,
+        agent_version_id=row.id,
+        detail=f"role {actor.role} attempted to resume {agent_id}@{version}",
+    )
+
+    if row.status != "suspended":
+        raise ApiError(
+            status.HTTP_409_CONFLICT,
+            "version_not_suspended",
+            f"version {version} is {row.status}; only a suspended version can be resumed",
+            {"status": row.status},
+        )
+
+    await resume_version(session, row, actor=actor.identity, note=body.note if body else None)
     return AgentVersionResponse.of(row)
 
 

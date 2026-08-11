@@ -14,10 +14,14 @@
 // --- Vocabularies -------------------------------------------------------------
 // Each of these is an enum in the contract, so it is a union here rather than `string`.
 
-/** The demonstration roles the API accepts in `X-Forge-Role` (NFR-5). */
-export type Role = 'configurator' | 'approver' | 'viewer'
+/**
+ * The demonstration roles the API accepts in `X-Forge-Role` (NFR-5). `admin` is the
+ * containment operator: the only role that can resume a suspended agent, and
+ * structurally never the one who configured or published it.
+ */
+export type Role = 'configurator' | 'approver' | 'viewer' | 'admin'
 
-export const ROLES: readonly Role[] = ['configurator', 'approver', 'viewer']
+export const ROLES: readonly Role[] = ['configurator', 'approver', 'viewer', 'admin']
 
 export type AgentType = 'chatbot' | 'workflow' | 'autonomous'
 
@@ -59,6 +63,7 @@ export type ReasonCode =
   | 'timeout'
   | 'budget_exceeded'
   | 'daily_budget_exceeded'
+  | 'agent_suspended'
   | 'provider_unavailable'
   | 'unsupported_definition'
   | 'agent_decision'
@@ -529,6 +534,96 @@ export interface EvalRun {
 export interface RunSuiteRequest {
   agent_id: string
   version: string
+}
+
+// --- Metrics & containment (FR-G3, FR-G4) ----------------------------------------
+
+/**
+ * The FR-G3 numbers over one population of runs (one agent's, or everyone's).
+ *
+ * Every figure is a projection of the append-only event log computed at read time —
+ * there is no counters table behind this, so a number here is always recomputable from
+ * the audit trail. Rates are over finished runs and are **null, not zero**, when
+ * nothing has finished: "no data" and "never happens" must not read the same.
+ */
+export interface MetricsSummary {
+  runs: number
+  runs_by_status: Record<string, number>
+  finished_runs: number
+  /** Starts refused outright (suspended agent) — they never became runs. */
+  runs_refused: number
+  auto_approval_rate: number | null
+  escalation_rate: number | null
+  /** Platform faults only: human vetoes (approvals) are the control working. */
+  block_rate: number | null
+  /** `governance.blocked` events per reason code — the unfiltered truth. */
+  blocks_by_reason: Record<string, number>
+  avg_tokens_per_run: number | null
+  /** Exact decimal as a string, like every money field. */
+  avg_cost_usd_per_run: string | null
+  avg_latency_seconds: number | null
+  total_cost_usd: string
+}
+
+/** One recent run on the dashboard — `run_id` opens the full trace at `#/runs/<id>`. */
+export interface MetricsRunRef {
+  run_id: string
+  agent: string
+  status: string
+  reason: string | null
+  total_cost_usd: string | null
+  started_at: string
+}
+
+/**
+ * The latest `version.suspended` event's payload, verbatim from the log — what tripped
+ * the breaker (or who suspended by hand). Open beyond the named fields because the
+ * payload is the recorded event, not a shape this build invents.
+ */
+export interface SuspensionRecord {
+  trigger?: 'circuit_breaker' | 'manual'
+  detail?: string
+  explanation?: string
+  actor?: string
+  occurred_at?: string
+  breaker?: {
+    metric?: 'failure_rate' | 'cost'
+    observed?: string
+    threshold?: string
+    window_seconds?: number
+    runs_in_window?: number
+    faulted_in_window?: number
+  } | null
+  [key: string]: unknown
+}
+
+/** One agent's dashboard row: identity, lifecycle state, numbers, recent runs. */
+export interface AgentMetrics {
+  agent_id: string
+  slug: string
+  name: string
+  /** Suspended if any version is; else published if any is; else draft. */
+  state: VersionStatus
+  suspension: SuspensionRecord | null
+  metrics: MetricsSummary
+  recent_runs: MetricsRunRef[]
+}
+
+/** The whole dashboard: every agent in the catalog, and the same numbers overall. */
+export interface MetricsReport {
+  generated_at: string
+  overall: MetricsSummary
+  agents: AgentMetrics[]
+}
+
+/** Body of the manual suspend: why, recorded verbatim in the event. */
+export interface SuspendVersionRequest {
+  reason?: string
+}
+
+/** Body of resume: a note, recorded with the actor who overrode the suspension. */
+export interface ResumeVersionRequest {
+  note?: string
 }
 
 /** The platform's error body: every failure is `{code, message, details}`. */

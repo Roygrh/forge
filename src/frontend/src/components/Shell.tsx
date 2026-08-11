@@ -16,7 +16,7 @@ export function Shell({
   active,
   children,
 }: {
-  active: 'agents' | 'approvals' | 'evals' | 'run'
+  active: 'agents' | 'approvals' | 'evals' | 'metrics' | 'run'
   children: React.ReactNode
 }) {
   return (
@@ -41,6 +41,7 @@ export function Shell({
             <NavLink href="#/" label="Agents" current={active === 'agents' || active === 'run'} />
             <NavLink href="#/approvals" label="Approvals" current={active === 'approvals'} />
             <NavLink href="#/evals" label="Evals" current={active === 'evals'} />
+            <NavLink href="#/metrics" label="Metrics" current={active === 'metrics'} />
           </nav>
 
           <div className="ml-auto flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-500">
@@ -56,10 +57,10 @@ export function Shell({
 
       <footer className="border-t border-slate-200 bg-white">
         <div className="mx-auto max-w-5xl px-6 py-4 text-xs text-slate-400">
-          Phase 4.5 — the eval suite as publish gate. Traces are projections of the append-only
-          event log (ADR-008); approvals expire server-side and expiry cancels, never approves
-          (FR-E3); a version publishes only after its declared suite passes, and the server
-          answers 409 to anything less (FR-F2).
+          Phase 4.6 — observability and containment. Metrics are projections of the append-only
+          event log, never a parallel store (FR-G3, ADR-008); the circuit breaker suspends an
+          agent on the record and its refusals are recorded too (FR-G4); nothing resumes by
+          itself — only the admin role can, and no configuring role may ever hold that power.
         </div>
       </footer>
     </div>

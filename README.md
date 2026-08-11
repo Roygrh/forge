@@ -36,7 +36,7 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 | 4.3 | Knowledge (authority-ranked retrieval, conflict resolution, citations) | ✅ Complete |
 | 4.4 | Human in the loop (approval queue, fail-closed expiry, autonomy report) | ✅ Complete |
 | 4.5 | Evaluation suite as publish gate (20 seeded cases, offline runner, hard 409) | ✅ Complete |
-| 4.6 | Observability | ⬜ Planned |
+| 4.6 | Observability & containment (per-agent metrics from the event log, circuit breaker, manual resume) | ✅ Complete |
 | 5 | Deployment | ⬜ Planned |
 | 6 | Demo packaging | ⬜ Planned |
 

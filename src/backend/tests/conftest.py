@@ -52,6 +52,26 @@ def _run_admin_statements(*statements: str) -> None:
         engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def breaker_headroom(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the circuit breaker (FR-G4) out of tests that are not about it.
+
+    The breaker is judged after every run, and much of this suite deliberately produces
+    faulted runs — a realistic threshold would suspend the skeleton agent halfway
+    through the runtime tests and turn every later 202 into a 409. Tests *about* the
+    breaker lower these again explicitly; everyone else runs with headroom no test can
+    reach. ``get_settings()`` is process-cached, so patching the instance is patching
+    what the app reads.
+    """
+    from decimal import Decimal
+
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "breaker_min_runs", 10**6)
+    monkeypatch.setattr(settings, "breaker_max_cost_usd", Decimal("1000000"))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def migrated_database() -> Iterator[None]:
     """Create the test database, run every migration, drop it at the end."""

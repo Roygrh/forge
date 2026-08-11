@@ -188,7 +188,7 @@ erDiagram
         bigint event_id PK "monotonic"
         uuid tenant_id FK
         timestamptz occurred_at
-        text type "run.started, decision.made, approval.pending|granted|rejected|expired, run.canceled, ..."
+        text type "run.started, decision.made, approval.*, version.suspended|resumed, governance.run_refused, ..."
         text actor "system or user id"
         uuid run_id FK "soft ref, nullable"
         uuid agent_version_id FK "soft ref, nullable"
@@ -248,6 +248,20 @@ queue, and lifecycle history are all **reconstructable from events** (FR-G1, FR-
 soft references (`run_id`, `agent_version_id`, `approval_id`) are nullable because a
 single event type only populates the refs it concerns; the relational tables are the
 fast read path, events are the audit ground truth.
+
+**Metrics are projections, and containment is events (FR-G3, FR-G4).** There is
+deliberately **no metrics table** in this schema. The per-agent numbers the dashboard
+shows — runs, auto-approval rate, escalation rate, block rate by reason code, average
+cost/tokens/latency — are computed from `events` at read time
+(`app/observability/metrics.py`), so a dashboard figure is always recomputable from the
+audit trail and can never drift from it. The circuit breaker consumes the same
+projection over a trailing window; when it trips, the `agent_versions.status` change to
+`suspended` and its `version.suspended` event (carrying the tripping numbers) are
+written in one transaction, and every start refused while suspended is itself a
+`governance.run_refused` event. *Why* an agent is suspended is not a column anywhere —
+it is the recorded event, which nothing can edit. The way back is `version.resumed`,
+written only by a person holding `agent.resume` (a permission structurally incompatible
+with configuring or publishing, NFR-5 applied to containment).
 
 **Why DNA as `jsonb`, not shredded columns.** The golden rule is that the DNA JSON Schema
 is *the* contract and nothing bypasses it. Storing the whole validated document as one

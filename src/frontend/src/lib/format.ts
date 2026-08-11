@@ -37,6 +37,30 @@ export function formatOffset(startIso: string, atIso: string): string {
   return `+${seconds.toFixed(2)}s`
 }
 
+/**
+ * A rate in [0, 1] as a percentage, or `—` when the denominator was empty.
+ *
+ * Null stays visibly different from 0%: "no finished runs to judge" and "this never
+ * happens" are different facts on a governance dashboard.
+ */
+export function formatRate(rate: number | null | undefined): string {
+  if (rate === null || rate === undefined) return '—'
+  const percent = rate * 100
+  return `${Number.isInteger(percent) ? percent : percent.toFixed(1)}%`
+}
+
+/** Seconds as a short duration, or `—` when there is nothing to average yet. */
+export function formatSeconds(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return '—'
+  if (seconds < 1) return `${Math.round(seconds * 1000)} ms`
+  return `${seconds.toFixed(2)} s`
+}
+
+/** An averaged count (e.g. tokens per run), rounded — or `—` with no data. */
+export function formatAverage(value: number | null | undefined): string {
+  return value === null || value === undefined ? '—' : Math.round(value).toLocaleString()
+}
+
 /** Turn `auto_approve` into `Auto approve` — for labels, not for logic. */
 export function humanize(value: string): string {
   const spaced = value.replace(/[_-]+/g, ' ')
