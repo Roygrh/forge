@@ -37,10 +37,34 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 | 4.4 | Human in the loop (approval queue, fail-closed expiry, autonomy report) | ✅ Complete |
 | 4.5 | Evaluation suite as publish gate (20 seeded cases, offline runner, hard 409) | ✅ Complete |
 | 4.6 | Observability & containment (per-agent metrics from the event log, circuit breaker, manual resume) | ✅ Complete |
-| 5 | Deployment | ⬜ Planned |
+| 5.1 | Deployment polish (one-command cold start, liveness/readiness, documented configuration) | ✅ Complete |
 | 6 | Demo packaging | ⬜ Planned |
 
-**A real invoice reaches a rule-cited decision today, in a browser.** `docker compose up` brings up PostgreSQL, the API, and the web app; `python -m scripts.seed` installs Meridian's governed rule set and three published agents. Press **Run** on the Invoice Validator and it reads the invoice from the simulated ERP, establishes the vendor's trust tier and history, matches the purchase order and the goods receipts, retrieves the rules that apply — and decides, citing them:
+## Quickstart
+
+You need Docker, and nothing else. No API key, no `.env` file, no follow-up commands.
+
+```bash
+git clone <this repo> && cd forge/deploy
+docker compose up -d --build
+```
+
+The command builds two images and starts four containers, in an order the file enforces:
+PostgreSQL comes up, a one-shot `migrate` container waits for it, applies the migrations
+and seeds Meridian's rule set, eval suite and agents, and only when that container exits 0
+does the API start. Then:
+
+```bash
+curl http://localhost:8000/api/v1/ready
+# {"status":"ready","checks":{"database":"ok","migrations":"ok","seed":"ok"}, ...}
+```
+
+Open <http://localhost:5173> for the UI and <http://localhost:8000/api/v1/docs> for the
+API. `docker compose logs migrate` shows exactly what was installed. The whole thing runs
+offline: the shipped agents name a deterministic in-process provider, so there is no
+credential to supply and nothing to pay for.
+
+**A real invoice reaches a rule-cited decision today, in a browser.** Press **Run** on the Invoice Validator and it reads the invoice from the simulated ERP, establishes the vendor's trust tier and history, matches the purchase order and the goods receipts, retrieves the rules that apply — and decides, citing them:
 
 ```
 auto_approve · cites R-001, R-010
@@ -68,4 +92,6 @@ A tool handler is invoked in exactly one place in the codebase, and a test reads
 
 **Nothing ships without passing its evals.** The 20 evaluation cases written during discovery — before the agents existed — are seeded into the database and runnable with one command (`python -m scripts.run_evals`): each case executes a real run of the version under test, deterministic and offline, and is scored by programmatic asserts — final action, cited rule IDs, tools called and *not* called, budgets, and a reconstructable trace. `POST .../publish` is the gate itself: it answers **409** until this exact version has a completed, passing eval run for the suite its own DNA declares, and the passing run is recorded on the version as the publish's evidence. `python -m scripts.demo_publish_gate` prints the whole story — refused with 409, 20/20 green, published with the eval run attached. The **Evals** screen shows every case's expected-vs-actual and disables the publish action with its reason while the gate is unmet — but the button is a courtesy; the 409 is the control.
 
-Observability dashboards are the rest of Phase 4. See `src/backend/README.md` for the quickstart, and `src/frontend/README.md` for the UI.
+**And it starts from nothing, first try.** `docker compose down -v && docker compose up -d --build` leaves a migrated, seeded, working system with no manual step — the migration and the seed are a one-shot container the API waits on, the database gate is a real TCP healthcheck rather than a guess, and `GET /api/v1/ready` distinguishes "still starting" from "broken" by naming the check that failed. Every variable the system reads is listed with its default in a committed `.env.example`; none of them is required, and no secret is committed anywhere.
+
+See `src/backend/README.md` for the API, the configuration reference and the test suite, and `src/frontend/README.md` for the UI.

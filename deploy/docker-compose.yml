@@ -1,8 +1,26 @@
 # Forge reference deployment (ADR-009).
 #
-# `docker compose up` from this directory brings up the whole stack: PostgreSQL 16
-# with pgvector, the FastAPI service, and the React SPA. The same images serve the
-# local, evaluator, and public-demo environments — only env values differ.
+# `docker compose up` from this directory brings up the whole stack — PostgreSQL 16 with
+# pgvector, the FastAPI service, and the React SPA — and leaves it **migrated, seeded and
+# ready to use**, on a fresh volume, with no follow-up commands. The same images serve
+# the local, evaluator, and public-demo environments; only env values differ.
+#
+# The order is enforced, not hoped for:
+#
+#   db  --(healthcheck: real TCP connection)-->  migrate  --(exit 0)-->  api  -->  web
+#
+# `migrate` is a one-shot container that runs `alembic upgrade head` and then the seed,
+# and `api` will not start until it has *completed successfully* — so the API never
+# serves against a half-built schema, and a failed migration stops the stack rather than
+# producing a running service with an empty catalog (golden rule 3, applied to
+# deployment). Migrations therefore remain a deliberate, separate step with their own
+# container and their own logs; what changed in Phase 5.1 is that a human no longer has
+# to type it.
+#
+# Every value below has a working default, so no `.env` file is required. Copy
+# `.env.example` to `.env` in this directory to override any of them — Compose picks it
+# up automatically. Nothing here needs an API key: the seeded agents name the
+# deterministic in-process provider (ADR-005), so the stack runs fully offline.
 #
 # Credentials here are demo-grade on purpose and committed deliberately
 # (ADR-009: "secrets management is env-file grade ... the first hardening item").
@@ -10,68 +28,149 @@
 
 name: forge
 
+# Backend configuration is shared: the migrator and the API must agree on the
+# database they are talking about, or the gate above proves nothing.
+x-backend-env: &backend-env
+  # Driver is pinned to psycopg 3; see app/config.py.
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-forge}:${POSTGRES_PASSWORD:-forge}@db:5432/${POSTGRES_DB:-forge}
+  # Optional (ADR-005). Absent by default and the stack is fully functional without it:
+  # the shipped agents' DNA names the deterministic demo provider. Set it only to point
+  # a definition at a real model.
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  # Deterministic, offline, free — the knowledge layer needs no key either.
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hashing}
+  # Circuit breaker (FR-G4). Defaults match app/config.py; stated here so the values a
+  # deployment can tune are visible in the file that defines the deployment.
+  BREAKER_WINDOW_SECONDS: ${BREAKER_WINDOW_SECONDS:-3600}
+  BREAKER_MIN_RUNS: ${BREAKER_MIN_RUNS:-5}
+  BREAKER_MAX_FAILURE_RATE: ${BREAKER_MAX_FAILURE_RATE:-0.5}
+  BREAKER_MAX_COST_USD: ${BREAKER_MAX_COST_USD:-2.50}
+
 services:
   # PostgreSQL 16 + pgvector — the single store for relational state, the
   # append-only events table, and knowledge embeddings (ADR-004).
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: forge
-      POSTGRES_PASSWORD: forge
-      POSTGRES_DB: forge
+      POSTGRES_USER: ${POSTGRES_USER:-forge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forge}
+      POSTGRES_DB: ${POSTGRES_DB:-forge}
     ports:
       # Published so migrations, the seed script, and pytest can run from the
       # host against this same database (see src/backend/README.md).
-      - "5432:5432"
+      - "${FORGE_DB_PORT:-5432}:5432"
     volumes:
       - forge-pgdata:/var/lib/postgresql/data
     healthcheck:
-      # `api` waits for this to pass before starting, so the first connection
-      # attempt is never against a database still initialising.
-      test: ["CMD-SHELL", "pg_isready -U forge -d forge"]
-      interval: 5s
+      # `-h 127.0.0.1` is the whole point: while the official image is running `initdb`
+      # on a first start it has a temporary server listening on the **unix socket only**,
+      # and a plain `pg_isready` would call that ready. Forcing the check over TCP means
+      # this passes when the database is genuinely accepting the connections `migrate`
+      # is about to make.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-forge} -d ${POSTGRES_DB:-forge}"]
+      interval: 3s
       timeout: 5s
-      retries: 10
+      retries: 20
       start_period: 10s
     restart: unless-stopped
 
-  # FastAPI backend: health, the read-only agent catalog, and the run surface
-  # (start a run, read its status, read its trace).
+  # One-shot: migrate the schema to head, then seed the tenant, the governed rule set,
+  # the knowledge corpus, the eval suite, and the published agents. Exits 0 and stays
+  # exited. Every step is idempotent, so a second `docker compose up` re-runs it
+  # harmlessly — and an existing rule row an operator has edited is left alone
+  # (scripts/seed.py), because rules being data is only true if a re-seed respects that.
+  migrate:
+    # The backend image, built once by `api` below. Deliberately no `build:` here: two
+    # services describing the same context and the same tag makes two builders race to
+    # export it, and the loser fails the whole `up` with "image already exists". Compose
+    # completes every build before it creates any container, so by the time this service
+    # is created the tag exists — one artifact, two roles, exactly as ADR-009 intends.
+    image: forge-backend:local
+    # `never` because this tag is local by construction. Without it Compose tries the
+    # registry first and prints a red "pull access denied for forge-backend" before
+    # falling back — harmless, and exactly the line that makes someone running this for
+    # the first time think it broke.
+    pull_policy: never
+    command: ["python", "-m", "scripts.init_db"]
+    environment: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+    # Never restart: this container is supposed to exit. A restart policy here would
+    # turn a completed migration into a crash-loop.
+    restart: "no"
+
+  # FastAPI backend: health and readiness, the agent catalog, runs and traces, the
+  # approval queue, the eval gate, and the metrics surface.
   api:
     build:
       context: ../src/backend
       dockerfile: Dockerfile
+    # Tagged, not left to Compose's generated name, so `migrate` above can name the same
+    # artifact instead of building a second copy of it. `pull_policy: build` keeps
+    # Compose from asking a registry about a tag that only ever exists locally — the
+    # layer cache makes the no-op rebuild instant, and a plain `docker compose up` can
+    # never start a stale image.
+    image: forge-backend:local
+    pull_policy: build
     environment:
-      # Driver is pinned to psycopg 3; see app/config.py.
-      DATABASE_URL: postgresql+psycopg://forge:forge@db:5432/forge
+      <<: *backend-env
       # The browser loads the SPA from :5173 and calls the API on :8000 — a different
       # origin, so it must be allowed explicitly. Stated here rather than left to the
       # default in app/config.py so the coupling between these two services is visible
-      # in the file that defines them both.
-      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      # in the file that defines them both. Change FORGE_WEB_PORT and this must change
+      # with it.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     ports:
-      - "8000:8000"
+      - "${FORGE_API_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        # The gate. `api` is not created until `migrate` has exited 0.
+        condition: service_completed_successfully
+    healthcheck:
+      # The readiness probe, not the liveness one: `healthy` here means the database is
+      # reachable, the schema is at this build's migration head, and the catalog has
+      # something published to run. python:3.12-slim ships no curl or wget, and Python
+      # is right there — urlopen raises on the 503 a not-ready instance answers with.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/v1/ready", timeout=5)
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 15s
     restart: unless-stopped
 
-  # React SPA (ADR-007) — the agent catalog and the run trace viewer.
+  # React SPA (ADR-007), served as a production build by nginx. The API's address is
+  # supplied at container start rather than baked into the bundle, so this image is the
+  # same artifact everywhere (see src/frontend/nginx/default.conf.template).
   web:
     build:
       context: ../src/frontend
       dockerfile: Dockerfile
+    image: forge-web:local
+    pull_policy: build
     environment:
       # As the *browser* sees the API, never as this container sees it: the SPA runs on
       # the user's machine, so `http://api:8000` would resolve to nothing there.
-      VITE_API_BASE_URL: http://localhost:8000
-      VITE_FORGE_ROLE: configurator
+      FORGE_API_BASE_URL: ${FORGE_API_BASE_URL:-http://localhost:8000}
+      FORGE_ROLE: ${FORGE_ROLE:-configurator}
     ports:
-      - "5173:5173"
+      - "${FORGE_WEB_PORT:-5173}:80"
     depends_on:
       # Ordering only. The SPA renders and reports the failure itself if the API is not
       # up yet, which is a better first screen than a container that refuses to start.
       - api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
     restart: unless-stopped
 
 volumes:

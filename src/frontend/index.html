@@ -3,6 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Runtime configuration, before anything else. A classic (non-deferred) script, so it
+      has finished executing before the module bundle Vite appends below it runs at all —
+      `src/api/client.ts` reads window.__FORGE_CONFIG__ at import time.
+
+      In the container nginx answers this from the environment at start-up, which is what
+      keeps the image the same artifact everywhere (ADR-009); in development it is the
+      placeholder in public/config.js and VITE_* takes over.
+    -->
+    <script src="/config.js"></script>
     <title>Forge — governed agent factory</title>
     <meta
       name="description"

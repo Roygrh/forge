@@ -1,10 +1,16 @@
 .claude/
 __pycache__/
 *.pyc
-.env
 .venv/
 node_modules/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# Real environment files, at any level — deploy/.env, src/backend/.env,
+# src/frontend/.env.local and anything else of that shape. The committed `*.env.example`
+# templates are the only ones with a value in them, and they hold no secret.
+.env
+.env.*
+!.env.example

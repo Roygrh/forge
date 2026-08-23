@@ -11,8 +11,15 @@ or the deadline passes with nobody deciding — which also **cancels**, because 
 that ran out of time is never a yes, and there is no operation anywhere in this API that
 extends one. The queue serves the evidence to decide each item with the item itself, and
 the autonomy-promotion report (FR-E5) measures approval rates per action category and
-applies nothing. The eval publish gate (4.5) is still ahead; where this build cannot
-honour something, it refuses rather than approximates.
+applies nothing. Where this build cannot honour something, it refuses rather than
+approximates.
+
+**Phase 4.5** made publishing eval-gated for real (a hard 409 until the version's
+declared suite has passed) and **4.6** added per-agent metrics projected from the event
+log plus the circuit breaker. **Phase 5.1** changed no capability at all: it made a
+from-scratch start work on the first attempt — migrate and seed run themselves, the
+health route split into liveness and readiness, and every environment variable is
+documented in a committed template.
 
 Earlier phases still hold: the autonomy levels are enforced in one place and cannot be
 bypassed (4.2); every refusal carries a machine-readable reason code, a plain-language
@@ -20,22 +27,33 @@ explanation, and a governance step in the trace; the DNA's hard limits are enfor
 knowledge retrieval ranks conflicting sources by authority rather than averaging them
 (4.3).
 
-## Quickstart (three commands)
+## Quickstart (one command)
 
 From the repository root:
 
 ```bash
-cd deploy && docker compose up -d --build        # 1. Postgres + API + SPA
-docker compose exec api alembic upgrade head     # 2. schema
-docker compose exec api python -m scripts.seed   # 3. tenant + rules + agents
+cd deploy && docker compose up -d --build
+```
+
+That is the whole install. No `.env` file, no API key, no follow-up commands: a one-shot
+`migrate` container runs `alembic upgrade head` and the seed before the API is allowed to
+start (see [`deploy/docker-compose.yml`](../../deploy/docker-compose.yml) and
+[ADR-009](../../docs/adr/009-docker-compose-deployment.md#amendment--phase-51-2026-08-21)).
+Both steps are idempotent, so running it again is safe.
+
+Wait for the API to report itself ready — about **5 seconds** after the command returns:
+
+```bash
+curl http://localhost:8000/api/v1/ready
+# {"status":"ready","checks":{"database":"ok","migrations":"ok","seed":"ok"},
+#  "detail":"Database reachable, schema at head, and the agent catalog is populated.",
+#  "schema_revision":"0006","expected_revision":"0006"}
 ```
 
 Then open <http://localhost:5173> and press **Run** ([`src/frontend`](../frontend/README.md)) —
 or do the same from a terminal:
 
 ```bash
-curl http://localhost:8000/api/v1/health         # {"status":"ok","db":"ok"}
-
 AGENT=$(docker compose exec -T db psql -U forge -d forge -tA \
   -c "select id from agents where slug='invoice-validator'")
 
@@ -80,8 +98,40 @@ container is Linux, so the documented path is unaffected. The test suite runs na
 
 Interactive docs: <http://localhost:8000/api/v1/docs>.
 
-Migrations are a deliberate, separate step — the API never migrates on boot, so a
-schema change is always an explicit, reviewable action.
+### Health and readiness
+
+Two routes, two questions, because a platform that conflates them restarts a healthy
+process for an outage it did not cause.
+
+| Route | Question | Answers |
+|---|---|---|
+| `GET /api/v1/health` | Is this process alive? | Always `200`. Touches no dependency — no database, no disk, no clock |
+| `GET /api/v1/ready` | Should traffic come here? | `200` when the database answers `SELECT 1`, the schema is stamped at this build's Alembic head, and something is published to run; otherwise `503` naming the check that failed |
+
+Readiness fails closed like everything else: a check that cannot be *proved* — the
+migration head is unreadable, the tables are not there yet — reports its own state and
+holds traffic back. Compose gates the `api` service's health on `/ready`, which is why
+`docker compose ps` saying `healthy` is an observation rather than a hope. Both shapes
+are in [`openapi.yaml`](../../docs/02-architecture/api/openapi.yaml).
+
+Migrations are still a deliberate, separate step — the API never migrates on boot, so a
+schema change is always an explicit, reviewable action. What changed in Phase 5.1 is
+only that the `migrate` container types it for you, with its own logs
+(`docker compose logs migrate`) and its own exit code standing between a failed
+migration and a running API.
+
+### Configuration
+
+Every variable the backend reads is listed, with its default and whether it is required,
+in [`.env.example`](./.env.example) — and for the container stack in
+[`deploy/.env.example`](../../deploy/.env.example). Neither file is needed to run
+anything; both are templates, and both are committed precisely because they contain no
+secret. `DATABASE_URL` is the only value a deployment must really supply, and compose
+supplies it.
+
+**No API key is required, anywhere.** The shipped agents' DNA names the deterministic
+in-process provider and knowledge retrieval uses a hashing embedder, so the entire
+demonstration — runs, traces, approvals, the 20 evals, the metrics — is offline and free.
 
 ## Tests
 
@@ -112,9 +162,10 @@ Lint, format, and types:
 
 | Path | Purpose |
 |---|---|
+| `.env.example` | Every variable `app/config.py` reads, with its default and whether it is required. A template; nothing needs it |
 | `app/config.py` | Settings from the environment; `DATABASE_URL` required, `ANTHROPIC_API_KEY` optional |
 | `app/db.py` | Async engine for the API, sync engine for migrations/scripts/tests |
-| `app/main.py` | FastAPI app; health probe, CORS for the SPA, and the routers |
+| `app/main.py` | FastAPI app; CORS for the SPA, and the routers |
 | `app/models/` | The fifteen tables of [`data-model.md`](../../docs/02-architecture/data-model.md) as plain mappings |
 | `app/governance.py` | The governance vocabulary: every reason the platform refuses, its plain-language explanation, and the role/permission matrix that enforces NFR-5 |
 | `app/erp/` | Simulated MeridianERP: vendors, POs, receipts, invoices, and the fact sheet the rules are evaluated against. An external system, not platform state |
@@ -126,12 +177,14 @@ Lint, format, and types:
 | `app/approvals/` | The human-in-the-loop queue: parking, approve/reject, server-side expiry that cancels, the evidence an approver is shown, and the read-only autonomy-promotion report (FR-E1..E5) |
 | `app/evals/` | The 20 eval cases as data (the executable form of `06-eval-cases.md`) and the runner that scores a version by programmatic asserts — the publish gate's evidence (FR-F1..F3) |
 | `app/api/` | Agent-catalog (read, draft authoring, the **eval-gated publish**), run, **approval**, knowledge and **eval** endpoints, the error shape, and the gateway dependencies |
+| `app/api/health.py` | The two probes: dependency-free **liveness**, and **readiness** that gates on the database, the migration head, and a populated catalog |
 | `alembic/` | Migration environment; the URL comes from settings, never from `alembic.ini` |
+| `scripts/init_db.py` | The whole of a cold start: wait for the database with a real `SELECT 1`, `alembic upgrade head`, then seed. What the compose `migrate` container runs |
 | `scripts/seed.py` | Idempotent seed: tenant, the governed rule set, the eval suite, and the published agent definitions |
 | `scripts/run_evals.py` | The one command of FR-F1: runs the suite against a version, prints per-case pass/fail, records the `eval_runs` row the publish gate reads, exits non-zero on failure |
 | `scripts/demo_hitl.py` | Drives the approval queue over the real HTTP surface and prints both traces: one parked-approved-resumed-executed, one parked-expired-canceled |
 | `scripts/demo_publish_gate.py` | Drives the publish gate over the real HTTP surface: a draft refused with 409, the suite passing 20/20, the same publish succeeding with its evidence |
-| `tests/` | Health, config, models, append-only, DNA contract, both gateways, output validation, the rule layer, **governance** (autonomy matrix, fail-closed matrix, hard limits, SoD), the AP agents end to end, the catalog, the runtime, **approvals** (approve/reject/expire, granularity, segregation of duties, and the absence of any extend operation), and **evals** (the 20 cases green, the hard 409, the gate's honesty against a restricted definition) |
+| `tests/` | **Liveness and readiness** (including the 503 paths — nothing published, schema unstamped), config, models, append-only, DNA contract, both gateways, output validation, the rule layer, **governance** (autonomy matrix, fail-closed matrix, hard limits, SoD), the AP agents end to end, the catalog, the runtime, **approvals** (approve/reject/expire, granularity, segregation of duties, and the absence of any extend operation), and **evals** (the 20 cases green, the hard 409, the gate's honesty against a restricted definition) |
 
 ## Notes for reviewers
 

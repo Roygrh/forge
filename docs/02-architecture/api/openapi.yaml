@@ -14,6 +14,7 @@ servers:
   - url: /api/v1
 
 tags:
+  - name: Health
   - name: Agents
   - name: Runs
   - name: Approvals
@@ -23,6 +24,47 @@ tags:
   - name: Tools
 
 paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness probe — the process is up
+      description: >-
+        Deliberately dependency-free: no database, no disk, no clock. A
+        dependency outage must never read as "restart this container", because
+        restarting the API does not fix PostgreSQL. Ask /ready for the question
+        whose answer can change. No role header: a probe is not an actor.
+      responses:
+        '200':
+          description: The process is alive
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe — database reachable, schema migrated, catalog seeded
+      description: >-
+        Whether this instance should be sent traffic. Answers 200 only when the
+        database answers a real SELECT 1, the schema is stamped at the Alembic
+        head this build expects, and at least one agent version is published —
+        otherwise 503, naming the check that failed so "still starting" and
+        "broken" are distinguishable from outside. Fails closed: a check that
+        cannot be proved to pass reports `unknown` and holds traffic back
+        rather than assuming the best. The compose stack (ADR-009) gates the
+        `api` service's health on this route.
+      responses:
+        '200':
+          description: Ready to serve
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+        '503':
+          description: Not ready to serve — same shape, with status `not_ready`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+
   /agents:
     get:
       tags: [Agents]
@@ -792,6 +834,61 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
 
   schemas:
+    Health:
+      type: object
+      required: [status, service, version]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          description: Constant. Reaching this route at all is the check.
+        service: { type: string, description: Configured application name }
+        version: { type: string, description: Backend build version }
+
+    Readiness:
+      type: object
+      required: [status, checks, detail]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+          description: >-
+            `ready` only when every check is `ok`. Carried on both the 200 and
+            the 503, so a caller that only reads the body is never misled.
+          x-status-code: '200 for ready, 503 for not_ready'
+        checks:
+          type: object
+          required: [database, migrations, seed]
+          properties:
+            database:
+              type: string
+              enum: [ok, down]
+              description: A real SELECT 1 round-trip, not a pool inspection.
+            migrations:
+              type: string
+              enum: [ok, pending, unknown]
+              description: >-
+                `ok` when the database is stamped at this build's Alembic head;
+                `pending` when it is behind or unstamped; `unknown` when the
+                head could not be read from the image, which holds traffic back
+                rather than assuming the schema is current.
+            seed:
+              type: string
+              enum: [ok, missing, unknown]
+              description: >-
+                `ok` when at least one agent version is published, so the
+                catalog has something to show and run. `unknown` when the
+                schema check did not pass and the question is not yet askable.
+        detail:
+          type: string
+          description: One sentence an operator can act on.
+        schema_revision:
+          type: [string, 'null']
+          description: Alembic revision the database is stamped at, when readable.
+        expected_revision:
+          type: [string, 'null']
+          description: Alembic head this build expects, when readable.
+
     Error:
       type: object
       required: [code, message]

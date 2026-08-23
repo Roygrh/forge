@@ -25,5 +25,8 @@ USER forge
 
 EXPOSE 8000
 
-# Migrations are a deliberate, separate step — never implicit on boot.
+# Migrations are a deliberate, separate step — never implicit on boot. The same image
+# runs them, as a one-shot `migrate` container that must exit 0 before this one starts
+# (`python -m scripts.init_db`, see deploy/docker-compose.yml), so a cold start needs no
+# manual command and the API still never migrates the database it is about to serve.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

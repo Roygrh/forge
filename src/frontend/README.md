@@ -18,13 +18,14 @@ The SPA is useless without the API, so start the backend first
 ([`src/backend/README.md`](../backend/README.md)):
 
 ```bash
-cd deploy && docker compose up -d --build      # Postgres + API + this SPA
-docker compose exec api alembic upgrade head   # schema
-docker compose exec api python -m scripts.seed # tenant + rules + agents
+cd deploy && docker compose up -d --build      # Postgres + API + this SPA, migrated and seeded
 ```
 
-Then open <http://localhost:5173>. That is all — the `web` service in the compose file
-runs this app.
+Give it about five seconds, then open <http://localhost:5173>. That is all — one command,
+no follow-up: the compose stack migrates and seeds itself before the API starts
+([ADR-009](../../docs/adr/009-docker-compose-deployment.md#amendment--phase-51-2026-08-21)).
+`curl http://localhost:8000/api/v1/ready` answers `{"status":"ready", ...}` when there is
+something to look at.
 
 Press **Run** on the Invoice Validator to watch a real invoice reach a rule-cited
 decision. Each agent's button sends the input that shows what its definition permits: the
@@ -68,6 +69,35 @@ npm run dev        # http://localhost:5173, hot reload
 Both paths use port 5173, so stop the compose `web` service (`docker compose stop web`)
 before running the dev server locally.
 
+### How it is served, and how it is configured
+
+The compose image serves a **production build** (`npm run build`) behind nginx — not the
+Vite dev server, which is what it ran before Phase 5.1. The reason it could not, until
+now, was real: Vite inlines `VITE_*` at *build* time, so a static image would have had
+the API's address baked in and would have needed rebuilding for every environment it was
+pointed at — exactly what [ADR-009](../../docs/adr/009-docker-compose-deployment.md)
+says these images must not need.
+
+That is resolved by moving the one environment-dependent value out of the bundle. nginx's
+own entrypoint expands `${FORGE_*}` into [`nginx/default.conf.template`](./nginx/default.conf.template)
+at container start, which serves a one-line `/config.js`:
+
+```js
+window.__FORGE_CONFIG__ = {"apiBaseUrl": "http://localhost:8000", "role": "configurator"};
+```
+
+`index.html` loads it before the bundle, and [`src/api/client.ts`](./src/api/client.ts)
+reads it with a fallback chain — runtime config, then `VITE_*`, then the documented
+default — so an unset or empty value degrades to something that works instead of
+pointing every call at nowhere. `public/config.js` is the development placeholder, so the
+same tag is never a 404 under `npm run dev`.
+
+The upshot: `forge-web:local` is repointed at a different backend with an environment
+variable and a restart, never a rebuild. Set `FORGE_API_BASE_URL` and `FORGE_ROLE` (see
+[`deploy/.env.example`](../../deploy/.env.example)) for the container; `VITE_API_BASE_URL`
+and `VITE_FORGE_ROLE` (see [`.env.example`](./.env.example)) still apply when you run
+from source.
+
 | Script | What it does |
 |---|---|
 | `npm run dev` | Vite dev server with hot reload |
@@ -80,14 +110,17 @@ before running the dev server locally.
 Every call goes through one wrapper, [`src/api/client.ts`](./src/api/client.ts) — which
 is what makes the following true by construction rather than by discipline.
 
-- **One base URL**, from `VITE_API_BASE_URL` (default `http://localhost:8000`), with
-  `/api/v1` appended. Copy [`.env.example`](./.env.example) to `.env` to point the SPA
-  at another backend.
-  Vite inlines `VITE_*` at build time and injects them at dev-server start, so this
-  value is always **the address the browser can reach** — never a Docker service name
-  like `http://api:8000`, which resolves to nothing on the user's machine.
-- **`X-Forge-Role` on every request**, initially from `VITE_FORGE_ROLE` (default
-  `configurator`) and switchable from the page header. This is the demonstration of
+- **One base URL**, resolved once from three sources in order: the runtime config the
+  server handed the page (`window.__FORGE_CONFIG__.apiBaseUrl`, the container path), then
+  `VITE_API_BASE_URL` inlined at build time (running from source), then
+  `http://localhost:8000`. `/api/v1` is appended. Whichever wins, it is **the address the
+  browser can reach** — never a Docker service name like `http://api:8000`, which resolves
+  to nothing on the user's machine. The fallbacks use `||`, not `??`, because an unset
+  environment variable reaches `envsubst` as an empty string and an empty base URL would
+  silently aim every call at the page's own origin.
+- **`X-Forge-Role` on every request**, initially from the same three sources
+  (`__FORGE_CONFIG__.role`, then `VITE_FORGE_ROLE`, default `configurator`) and
+  switchable from the page header. This is the demonstration of
   segregation of duties (NFR-5), not authentication: the header names an actor, the API
   records it on every event, and no credential is involved. Switching sends a different
   role name and grants nothing — the **server** decides what a role may do and answers
@@ -130,6 +163,8 @@ Endpoints consumed, all read-only except the one that starts a run:
 | `src/components/Pill.tsx` | The badge vocabulary: one colour per state, exhaustive over the contract's unions |
 | `src/components/{Shell,Json,Disclosure,Feedback}.tsx` | Chrome, JSON blocks, disclosures, loading/error/empty |
 | `src/lib/{format,useAsync,useActingRole}.ts` | Presentation helpers, a three-state loader, and the acting role as React state |
+| `nginx/default.conf.template` | How the production image serves the build, and how `/config.js` carries the environment to the browser |
+| `public/config.js` | The development stand-in for that file, so the script tag is never a 404 under `npm run dev` |
 
 ## Notes for reviewers
 
@@ -184,9 +219,10 @@ Endpoints consumed, all read-only except the one that starts a run:
 - **No router, no state library, no component library.** Three routes over the URL hash,
   one `useAsync` hook, one `useSyncExternalStore` for the acting role, and Tailwind. Each of those would be a dependency carried for a screen
   that does not need it.
-- **The compose image runs the dev server, on purpose.** Vite inlines `VITE_*` at build
-  time, so a static production image would have to be rebuilt for every environment it is
-  pointed at. The dev server reads the value at start-up, which keeps `docker compose up`
-  one command that works on any host. `npm run build` is what a real deployment ships;
-  swapping the Dockerfile's final stage for nginx is the change to make when there is a
-  real environment to ship to.
+- **The compose image serves the production build, and stays environment-independent.**
+  Phase 5.1 replaced the Vite dev server with `npm run build` behind nginx. The reason the
+  dev server was there — Vite inlines `VITE_*` at build time, so a static image would need
+  rebuilding per environment — was answered rather than accepted: the one environment-
+  dependent value is served as `/config.js` at container start, so both properties hold at
+  once. `tsc --noEmit` runs inside the image build, so a type error fails the build instead
+  of reaching a container.

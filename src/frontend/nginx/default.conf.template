@@ -1,0 +1,45 @@
+# Forge SPA server config (ADR-009, amended in Phase 5.1).
+#
+# The SPA has exactly one environment-dependent value: where the API is, **as the
+# browser sees it**. Vite inlines `VITE_*` at build time, so baking it would make the
+# image environment-specific and break ADR-009's central claim that the evaluator's
+# image and the cloud image are the same artifact. So it is served from here instead,
+# at container start, by nginx's own entrypoint: it expands `${FORGE_*}` in this
+# template through `envsubst`, and `NGINX_ENVSUBST_FILTER=^FORGE_` keeps the expansion
+# to those names so nginx's own `$uri` and friends survive untouched.
+
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Runtime configuration, read by index.html before the bundle loads. Never cached:
+    # it is the one response whose contents differ per environment, and a stale copy
+    # would silently point the SPA at the wrong API.
+    location = /config.js {
+        default_type application/javascript;
+        add_header Cache-Control "no-store" always;
+        return 200 'window.__FORGE_CONFIG__ = {"apiBaseUrl": "${FORGE_API_BASE_URL}", "role": "${FORGE_ROLE}"};';
+    }
+
+    # Vite emits content-hashed filenames here, so a stale copy is impossible by name.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable" always;
+        try_files $uri =404;
+    }
+
+    # The shell names the current asset hashes, so it is the one file that must always
+    # be revalidated.
+    location = /index.html {
+        add_header Cache-Control "no-store" always;
+    }
+
+    # This SPA routes on the URL hash (`#/runs/<id>`), so a deep link is already a
+    # request for `/`. The fallback covers the case anyway rather than 404ing.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

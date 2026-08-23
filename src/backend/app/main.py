@@ -10,31 +10,32 @@ report. Phase 4.5 adds the evaluation suite as the publish gate: draft authoring
 eval endpoints, and a ``publish`` that answers 409 until the version's declared suite
 has passed (FR-F2). Phase 4.6 adds observability and containment: per-agent metrics
 derived from the event log (FR-G3), and the circuit breaker with its admin-only resume
-(FR-G4).
+(FR-G4). Phase 5.1 splits the single health route into a dependency-free **liveness**
+probe and a **readiness** probe that gates on the database, the migration head, and the
+seeded catalog (:mod:`app.api.health`) — the signal ``docker compose up`` waits on.
 """
 
 import asyncio
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Literal
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 
 from app import __version__
 from app.api import (
     agents_router,
     approvals_router,
     evals_router,
+    health_router,
     install_error_handlers,
     knowledge_router,
     metrics_router,
     runs_router,
 )
 from app.config import get_settings
-from app.db import check_database, get_async_engine
+from app.db import get_async_engine
 
 # psycopg's async driver refuses Windows' default ProactorEventLoop. The deployment
 # target is Linux (ADR-009), where this is a no-op; it exists so the **test suite** runs
@@ -50,15 +51,6 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 settings = get_settings()
-
-
-class HealthResponse(BaseModel):
-    """Result of the liveness probe."""
-
-    status: Literal["ok", "degraded"] = Field(
-        description="ok when every dependency answered; degraded otherwise"
-    )
-    db: Literal["ok", "down"] = Field(description="Result of a real SELECT 1 round-trip")
 
 
 @asynccontextmanager
@@ -89,26 +81,10 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-Forge-Role"],
 )
 
+app.include_router(health_router, prefix=settings.api_prefix)
 app.include_router(agents_router, prefix=settings.api_prefix)
 app.include_router(runs_router, prefix=settings.api_prefix)
 app.include_router(approvals_router, prefix=settings.api_prefix)
 app.include_router(knowledge_router, prefix=settings.api_prefix)
 app.include_router(evals_router, prefix=settings.api_prefix)
 app.include_router(metrics_router, prefix=settings.api_prefix)
-
-
-@app.get(
-    f"{settings.api_prefix}/health",
-    response_model=HealthResponse,
-    tags=["Health"],
-    summary="Liveness probe with a real database round-trip",
-)
-async def health() -> HealthResponse:
-    """Report service and database health.
-
-    Always answers 200: the probe's job is to report the state of its dependencies,
-    so a database outage reads as ``degraded``/``down`` rather than as a failure to
-    answer. Callers gate on the fields, not on the status code.
-    """
-    db_ok = await check_database()
-    return HealthResponse(status="ok" if db_ok else "degraded", db="ok" if db_ok else "down")

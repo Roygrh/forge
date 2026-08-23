@@ -31,12 +31,31 @@ import type {
 } from './types'
 
 /**
- * Supplied by Vite from the environment — inlined by `vite build`, injected by the dev
- * server. Either way it names the API as the *browser* sees it, so a Docker service
- * name would be wrong here. The default matches the compose stack, which publishes the
- * API on the host at :8000 (deploy/docker-compose.yml).
+ * Configuration served with the page, when there is any.
+ *
+ * The production image serves `/config.js` from its own environment at container
+ * start-up, because Vite inlines `VITE_*` at *build* time and an image that had the API
+ * address baked in would be environment-specific — exactly what ADR-009 says these
+ * images must not be. In development the placeholder in `public/config.js` sets empty
+ * values and `VITE_*` takes over.
  */
-const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/+$/, '')
+const runtime: ForgeRuntimeConfig = (typeof window === 'undefined' ? undefined : window.__FORGE_CONFIG__) ?? {}
+
+/**
+ * Where the API is, as the *browser* sees it — so a Docker service name like
+ * `http://api:8000` would be wrong here; it resolves to nothing on the user's machine.
+ *
+ * Three sources, in order: what the server handed us, what the build inlined, and the
+ * documented default, which matches the compose stack publishing the API on the host at
+ * :8000 (deploy/docker-compose.yml). `||` rather than `??` on purpose — an unset
+ * environment variable reaches `envsubst` as an empty string, and an empty base URL
+ * would point every call at the page's own origin instead of falling back.
+ */
+const BASE_URL = (
+  runtime.apiBaseUrl ||
+  import.meta.env.VITE_API_BASE_URL ||
+  'http://localhost:8000'
+).replace(/\/+$/, '')
 
 const API_PREFIX = '/api/v1'
 
@@ -52,13 +71,14 @@ const API_PREFIX = '/api/v1'
  * reading that it would. Switching changes only which role name is sent — the server
  * decides what that role may do, and answers 403 when it may not.
  *
- * An unrecognised env value falls back to `configurator` rather than being forwarded:
- * the API would reject it, and a misconfigured env var should not read as a broken
- * backend.
+ * Same three sources as the base URL above. An unrecognised value — a typo, or the empty
+ * string an unset environment variable expands to — falls back to `configurator` rather
+ * than being forwarded: the API would reject it, and a misconfigured env var should not
+ * read as a broken backend.
  */
-const DEFAULT_ROLE: Role = isRole(import.meta.env.VITE_FORGE_ROLE)
-  ? import.meta.env.VITE_FORGE_ROLE
-  : 'configurator'
+const CONFIGURED_ROLE = runtime.role || import.meta.env.VITE_FORGE_ROLE
+
+const DEFAULT_ROLE: Role = isRole(CONFIGURED_ROLE) ? CONFIGURED_ROLE : 'configurator'
 
 let actingRole: Role = DEFAULT_ROLE
 const roleListeners = new Set<() => void>()

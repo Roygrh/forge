@@ -6,18 +6,19 @@ script, and tests use a **synchronous** engine because they are linear scripts.
 Both share the same ``postgresql+psycopg://`` URL — psycopg 3 provides a sync and
 an async driver behind one SQLAlchemy dialect, so there is nothing to keep in sync.
 
-This module owns connectivity only: no models, no queries beyond the liveness probe.
+This module owns connectivity only: no models, no queries. The readiness probe
+(:mod:`app.api.health`) opens its own connection, because the questions it asks —
+``SELECT 1``, the stamped migration revision, whether anything is published — have to be
+answered against one and the same connection to mean anything together.
 """
 
-import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends
-from sqlalchemy import Engine, create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -27,8 +28,6 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
-
-logger = logging.getLogger(__name__)
 
 
 @lru_cache
@@ -51,21 +50,6 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 #: One session per request, for handlers that need the database.
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-
-
-async def check_database() -> bool:
-    """Round-trip a real ``SELECT 1``; return ``False`` on any database failure.
-
-    The health probe reports rather than raises, so a database outage surfaces as
-    ``db: down`` instead of an opaque 500.
-    """
-    try:
-        async with get_async_engine().connect() as connection:
-            await connection.execute(text("SELECT 1"))
-    except SQLAlchemyError:
-        logger.warning("database health check failed", exc_info=True)
-        return False
-    return True
 
 
 def create_sync_engine(url: str | None = None) -> Engine:
