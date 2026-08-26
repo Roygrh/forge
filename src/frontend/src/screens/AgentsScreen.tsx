@@ -8,7 +8,7 @@
  * will run (golden rule 1).
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useId, useState } from 'react'
 
 import { api } from '../api/client'
 import type { Agent, AgentVersion } from '../api/types'
@@ -18,39 +18,7 @@ import { AutonomyPill, Pill, VersionStatusPill } from '../components/Pill'
 import { Button, PageHeading } from '../components/Shell'
 import { useAsync } from '../lib/useAsync'
 import { humanize } from '../lib/format'
-
-/**
- * What the Run button sends, per agent.
- *
- * The three accounts-payable agents are triggered with an invoice id from the seeded
- * MeridianERP. `inv-0001` is eval case E-01 — a trusted vendor, a valid PO, and a 0.8%
- * price variance — which is the story the demo opens with: a routine invoice that flows
- * without a human and says exactly which rules let it.
- *
- * Anything else falls back to the skeleton agent's payload, so a catalog containing an
- * older agent still has a working button rather than a broken one.
- */
-const DEMO_INVOICE_ID = 'inv-0001'
-const FALLBACK_INPUT = { topic: 'governance' }
-
-const DEMO_INPUT_BY_SLUG: Record<string, Record<string, string>> = {
-  'invoice-intake': { invoice_id: DEMO_INVOICE_ID },
-  'invoice-validator': { invoice_id: DEMO_INVOICE_ID },
-  // The comms agent asks the vendor something — and its one tool needs a human, so this
-  // run is expected to stop in `awaiting_approval` rather than complete, and to appear
-  // in the Approvals queue. Nothing reaches the vendor until somebody releases it there.
-  'invoice-comms': {
-    invoice_id: 'inv-0005',
-    question: 'Which purchase order covers the price difference on this invoice?',
-  },
-  // The same invoice as the validator, against a definition that forbids approving it.
-  // Expected to be BLOCKED — that is what it is for.
-  'invoice-validator-restricted': { invoice_id: DEMO_INVOICE_ID },
-}
-
-function demoInputFor(slug: string): Record<string, string> {
-  return DEMO_INPUT_BY_SLUG[slug] ?? FALLBACK_INPUT
-}
+import { runsFor } from '../lib/story'
 
 interface CatalogEntry {
   agent: Agent
@@ -115,7 +83,14 @@ function AgentCard({
 }) {
   const { agent, versions } = entry
   const runnable = versions.find((version) => version.status === 'published')
-  const input = demoInputFor(agent.slug)
+
+  // The pre-composed runs this agent offers, in the order docs/demo-script.md narrates.
+  // Never empty, so the first entry is always a valid default selection.
+  const options = runsFor(agent.slug)
+  const selectId = useId()
+  const [selectedKey, setSelectedKey] = useState(options[0].key)
+  const selected = options.find((option) => option.key === selectedKey) ?? options[0]
+  const input = selected.input
 
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<unknown>(null)
@@ -165,13 +140,44 @@ function AgentCard({
           )}
         </div>
 
-        <div className="flex flex-col items-end gap-1">
-          <Button onClick={() => void start()} disabled={runnable === undefined || starting}>
-            {starting ? 'Running…' : 'Run'}
-          </Button>
-          <span className="max-w-xs text-right text-xs break-all text-slate-400">
-            input <span className="font-mono">{JSON.stringify(input)}</span>
-          </span>
+        {/*
+          Which case to run, and then Run. The picker exists so a presenter never has to
+          hunt for an invoice id mid-sentence: the entries are the demo story's beats, in
+          order, labelled by the invoice number they will be saying out loud. It chooses
+          *which seeded record* the run is about — nothing more. There is no editing
+          here, because the input to a governed run is not a free-text box.
+        */}
+        <div className="flex w-full flex-col gap-1 sm:w-80">
+          <label
+            htmlFor={selectId}
+            className="text-xs font-medium tracking-wide text-slate-500 uppercase"
+          >
+            Case to run
+          </label>
+          <select
+            id={selectId}
+            value={selected.key}
+            onChange={(event) => setSelectedKey(event.target.value)}
+            disabled={starting}
+            className="w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-800 shadow-xs focus:border-indigo-400 focus:ring-2 focus:ring-indigo-200 focus:outline-none disabled:bg-slate-100"
+          >
+            {options.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.beat === null ? option.label : `${option.beat}. ${option.label}`}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs leading-relaxed text-slate-500">{selected.point}</p>
+          <div className="mt-1 flex items-center justify-between gap-3">
+            <span className="min-w-0 text-xs break-all text-slate-400">
+              input <span className="font-mono">{JSON.stringify(input)}</span>
+            </span>
+            <span className="shrink-0">
+              <Button onClick={() => void start()} disabled={runnable === undefined || starting}>
+                {starting ? 'Running…' : 'Run'}
+              </Button>
+            </span>
+          </div>
         </div>
       </div>
 

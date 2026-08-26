@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import sync_session
+from app.demo_story import DEMO_STORY
 from app.dna import SHIPPED_AGENT_SLUGS, load_agent_dna, validate_dna
 from app.evals.catalog import CASES, SUITE_NAME, SUITE_SLUG, SUITE_VERSION
 from app.knowledge import ingest_knowledge
@@ -336,6 +337,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"{'published' if created else 'already present'} "
                 f"(agent_version_id={version.id})"
             )
+
+        # The demo story is a *curation* of records that are already frozen in
+        # app/erp/seed_data.py, not extra data — so there is nothing to write here.
+        # Printing it is the point: `docker compose logs migrate` then shows the exact
+        # running order a presenter is about to follow (docs/demo-script.md), which is
+        # the pre-flight check that the stack in front of them is the one the script
+        # was written against.
+        print(f"demo story: {len(DEMO_STORY)} beats, in presentation order")
+        for beat in DEMO_STORY:
+            print(f"  {beat.beat}. {beat.label}  ->  {beat.agent_slug}  ({beat.expect_status})")
     return 0
 
 

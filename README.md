@@ -17,6 +17,8 @@ The core idea — *one runtime, N agents defined declaratively* — is what lets
 The `docs/` folder is the source of truth and is numbered to read in order:
 
 - **`docs/00-charter.md`** — what Forge is, its scope, and the frozen decisions.
+- **`docs/demo-script.md`** — the ten-minute walkthrough, in a technical and a non-technical
+  version, with pre-flight and recovery. Every beat is asserted by the test suite.
 - **`docs/01-discovery/`** — the (simulated) client, its stakeholders, the interviews, and the captured business rules and evaluation cases. This is the requirements phase.
 - **`docs/02-architecture/`** — the C4 model, the behavioral diagrams, the data model, the **agent DNA contract** (`dna-schema.json`), and the API contract (`openapi.yaml`).
 - **`docs/adr/`** — the architecture decision records: each significant choice with its context, alternatives, and trade-offs.
@@ -38,7 +40,7 @@ The `docs/` folder is the source of truth and is numbered to read in order:
 | 4.5 | Evaluation suite as publish gate (20 seeded cases, offline runner, hard 409) | ✅ Complete |
 | 4.6 | Observability & containment (per-agent metrics from the event log, circuit breaker, manual resume) | ✅ Complete |
 | 5.1 | Deployment polish (one-command cold start, liveness/readiness, documented configuration) | ✅ Complete |
-| 6 | Demo packaging | ⬜ Planned |
+| 6.1 | Demo packaging (curated story data, 10-minute script in two versions, case picker in the UI) | ✅ Complete |
 
 ## Quickstart
 
@@ -63,6 +65,14 @@ Open <http://localhost:5173> for the UI and <http://localhost:8000/api/v1/docs> 
 API. `docker compose logs migrate` shows exactly what was installed. The whole thing runs
 offline: the shipped agents name a deterministic in-process provider, so there is no
 credential to supply and nothing to pay for.
+
+**Ten minutes, five beats, no hunting for an invoice id.** Each agent card carries a **Case to
+run** picker holding the demo story in order — a clean approval, the same vendor over the CFO's
+threshold, a duplicate that gets blocked, a message a person must release, and a policy question
+three of Meridian's own sources answer differently. `docs/demo-script.md` narrates all five, twice:
+once for an engineer and once for someone who will never open a terminal. The beats are defined in
+one place (`app/demo_story.py`) and executed end to end by the test suite on every build, so the
+script cannot quietly stop being true.
 
 **A real invoice reaches a rule-cited decision today, in a browser.** Press **Run** on the Invoice Validator and it reads the invoice from the simulated ERP, establishes the vendor's trust tier and history, matches the purchase order and the goods receipts, retrieves the rules that apply — and decides, citing them:
 

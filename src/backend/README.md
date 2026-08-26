@@ -180,7 +180,8 @@ Lint, format, and types:
 | `app/api/health.py` | The two probes: dependency-free **liveness**, and **readiness** that gates on the database, the migration head, and a populated catalog |
 | `alembic/` | Migration environment; the URL comes from settings, never from `alembic.ini` |
 | `scripts/init_db.py` | The whole of a cold start: wait for the database with a real `SELECT 1`, `alembic upgrade head`, then seed. What the compose `migrate` container runs |
-| `scripts/seed.py` | Idempotent seed: tenant, the governed rule set, the eval suite, and the published agent definitions |
+| `app/demo_story.py` | The five beats of `docs/demo-script.md` as data — which run, in which order, under which label. A curation of records already frozen in `app/erp/seed_data.py`, asserted end to end by `tests/test_demo_story.py` |
+| `scripts/seed.py` | Idempotent seed: tenant, the governed rule set, the eval suite, and the published agent definitions; prints the demo story's running order |
 | `scripts/run_evals.py` | The one command of FR-F1: runs the suite against a version, prints per-case pass/fail, records the `eval_runs` row the publish gate reads, exits non-zero on failure |
 | `scripts/demo_hitl.py` | Drives the approval queue over the real HTTP surface and prints both traces: one parked-approved-resumed-executed, one parked-expired-canceled |
 | `scripts/demo_publish_gate.py` | Drives the publish gate over the real HTTP surface: a draft refused with 409, the suite passing 20/20, the same publish succeeding with its evidence |
