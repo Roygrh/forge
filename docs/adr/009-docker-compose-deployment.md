@@ -109,3 +109,25 @@ rather than a guess.
   builders race to export it and fails the `up`, so only `api` builds and `migrate`
   names the result — a coupling that is invisible until it breaks, and is commented in
   the compose file where it lives.
+
+## Amendment — Phase 6.2 (2026-08-26): the public instance is deferred
+
+The decision stands: Compose is the reference deployment, and the images are the single
+artifact. The third audience named above — "a low-cost public demo instance" — was
+**deferred by decision at Phase 5.2**, and this amendment records why so it is not read
+as something that ran out of time.
+
+At close, the platform's authentication is a trusted `X-Forge-Role` header and its
+secrets are env-file grade — both flagged above as the first hardening items for any real
+deployment. A public instance with those properties would be a standing liability for a
+demonstration whose entire value is *governance*: anyone with the URL could act as any
+role, and the append-only audit log would faithfully record strangers doing so. The
+one-command local cold start (5.1) verified from an empty volume, plus a recorded demo
+video, cover the evaluator's need at a fraction of that risk, and the `forge-backend` and
+`forge-web` images already build identically for either environment — nothing about the
+parity driver is lost.
+
+**Revisit when** real authentication exists in front of the SPA and the API, or when an
+evaluator genuinely cannot run Docker. The change then is environment configuration —
+`FORGE_API_BASE_URL`, `CORS_ORIGINS`, real `POSTGRES_*` values — and no rebuild, which is
+what this ADR promised.

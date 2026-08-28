@@ -24,7 +24,7 @@ stateDiagram-v2
     note right of suspended
         Suspend halts runs, history is retained.
         Resume needs agent.resume (admin only) and is
-        recorded; rebuild forks a NEW draft version —
+        recorded. Rebuild forks a NEW draft version —
         the prior version is never edited in place.
     end note
 ```

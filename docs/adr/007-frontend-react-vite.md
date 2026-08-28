@@ -42,3 +42,17 @@ editing) where a component model earns its keep.
   the full bundle — irrelevant at this user count, noted for honesty.
 - Bad: React 18 + strict TS discipline requires generated API types to stay in sync
   with the backend; enforced by regenerating types in CI from the OpenAPI spec.
+
+## Amendment — Phase 6.2 (2026-08-26)
+
+The decision stands. The consequence "enforced by regenerating types in CI from the
+OpenAPI spec" did not happen and is corrected here rather than left aspirational: the
+SPA's API types are **hand-written** in `src/api/types.ts`, each shape citing the backend
+module it mirrors (`app/api/schemas.py`), and there is no CI pipeline (ADR-002
+amendment). The consumed surface stayed small enough — five screens, one client wrapper —
+that a generator in the build would have been a thing to maintain before there was
+anything to keep in sync. What *is* enforced: `tsc --noEmit` runs inside the image build,
+and `Pill.tsx` maps every union in the contract with `Record<Union, Tone>`, so a state
+added to the backend breaks this build instead of rendering grey. A generator becomes
+worth its keep the day the surface grows, and adopting one changes nothing in this
+decision.

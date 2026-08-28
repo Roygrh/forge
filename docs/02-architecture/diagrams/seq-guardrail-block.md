@@ -16,19 +16,22 @@ sequenceDiagram
 
     Runtime->>ToolGW: Gather evidence (read_invoice, get_vendor)
     ToolGW-->>Runtime: Invoice + vendor facts (incl. invoice-number history)
-    Runtime->>KB: Retrieve applicable rules
+    Runtime->>ToolGW: query_rules (a granted tool)
+    ToolGW->>KB: Retrieve applicable rules
     alt Duplicate invoice number INV-4471 (R-040, E-14)
-        KB-->>Runtime: R-040 matches (hard duplicate rule)
+        KB-->>ToolGW: R-040 matches (hard duplicate rule)
+        ToolGW-->>Runtime: Rules as evidence
         Runtime->>LLMGW: Decide (schema-constrained)
         LLMGW-->>Runtime: block_escalate, cites R-040
         Note over Runtime,ToolGW: approve_invoice is NEVER invoked
         Runtime->>DB: Append decision block_escalate (R-040) + escalation
     else No rule matches / low confidence (R-091, E-20)
-        KB-->>Runtime: No rule matches
+        KB-->>ToolGW: No rule matches
+        ToolGW-->>Runtime: No applicable rule
         Runtime->>LLMGW: Decide (schema-constrained)
         LLMGW-->>Runtime: escalate, reason = no-rule-match
         Note over Runtime,ToolGW: Fail closed — never guess, never execute
-            Runtime->>DB: Append decision escalate (R-091)
+        Runtime->>DB: Append decision escalate (R-091)
         Runtime->>DB: Append governance.blocked (reason_code = no_rule_match)
     end
     Runtime->>DB: Append terminal event (awaiting human)

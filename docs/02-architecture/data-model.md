@@ -93,7 +93,7 @@ erDiagram
         uuid tool_invocation_id FK "unique: one action instance per approval"
         text status "pending | granted | rejected | expired"
         timestamptz expires_at "server-side, fail-closed, never extended"
-        text decision "approve | reject; null for an expiry, which decides nothing"
+        text decision "approve | reject, null for an expiry, which decides nothing"
         text decided_by "actor, or system for an expiry"
         timestamptz decided_at "the deadline itself when expired"
         text note

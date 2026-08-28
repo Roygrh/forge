@@ -3,13 +3,22 @@ info:
   title: Forge Platform API
   version: 1.0.0
   description: >-
-    REST contract consumed by the Forge SPA (catalog, approval queue, trace
-    viewer). Consistent with the data model (data-model.md) and the agent DNA
-    contract (dna-schema.json). Governance is structural: publishing is
-    eval-gated (409 when the gate has not passed), approvals expire server-side
-    and there is no extend/auto-approve operation, and a role header
-    demonstrates segregation of duties (NFR-5). This is a demonstration
-    contract, not a production auth design.
+    REST contract consumed by the Forge SPA (catalog, run trace viewer, approval
+    queue, eval suite and publish gate, metrics). Consistent with the data model
+    (data-model.md) and the agent DNA contract (dna-schema.json). Governance is
+    structural: publishing is eval-gated (409 when the gate has not passed),
+    approvals expire server-side and there is no extend/auto-approve operation,
+    and a role header demonstrates segregation of duties (NFR-5). This is a
+    demonstration contract, not a production auth design.
+
+    Three operations are declared here as design intent and are NOT served by
+    the build at Phase 6.2 close; each is marked `x-forge-status: not-implemented`
+    with what exists instead: `POST /agents` (agents are created by the seed;
+    new versions of an existing agent are admitted by `POST /agents/{agentId}/versions`),
+    `POST /knowledge/collections/{collectionId}/ingest` (ingestion runs at seed
+    time, scripts/seed.py via app/knowledge/ingest.py), and `GET /tools` (the
+    registry is code, app/tools/registry.py, and each agent's grants are read
+    from its DNA in the catalog). The served contract is GET /api/v1/openapi.json.
 servers:
   - url: /api/v1
 
@@ -82,7 +91,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Agents]
-      summary: Create an agent (identity only; versions are added separately)
+      x-forge-status: not-implemented
+      summary: Create an agent (identity only; versions are added separately) — NOT SERVED at 6.2 close; agents are created by the seed
       parameters:
         - $ref: '#/components/parameters/RoleHeader'
       requestBody:
@@ -568,7 +578,8 @@ paths:
       - $ref: '#/components/parameters/CollectionId'
     post:
       tags: [Knowledge]
-      summary: Trigger ingestion for a collection
+      x-forge-status: not-implemented
+      summary: Trigger ingestion for a collection — NOT SERVED at 6.2 close; ingestion runs at seed time
       description: >-
         Chunks and embeds source documents into the collection. Requires the
         configurator role.
@@ -735,7 +746,8 @@ paths:
   /tools:
     get:
       tags: [Tools]
-      summary: List the registered tool catalog (read-only)
+      x-forge-status: not-implemented
+      summary: List the registered tool catalog (read-only) — NOT SERVED at 6.2 close; the registry is code (app/tools/registry.py)
       description: >-
         The tools an agent may be granted in its DNA, with their typed in/out
         contracts. Read-only — tools are registered out of band, never created

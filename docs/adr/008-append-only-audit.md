@@ -48,3 +48,17 @@ ADR-004's single-store decision at demo scale.
 - Bad: corrections require compensating events, never edits; event schema changes
   need versioned payloads. Table growth needs eventual partitioning (thresholds in
   ADR-004).
+
+## Amendment — Phase 3.1, recorded at 6.2 (2026-08-26)
+
+The decision stands, and the mechanism gained a second layer when it was implemented.
+The grant alone — `INSERT`/`SELECT` only for the application role — is not enforcement
+in the shipped stack, because PostgreSQL exempts a table's **owner** from its own grants
+and the demo connects as the owner for operational simplicity. So the initial migration
+(`src/backend/alembic/versions/20260729_0001_initial_schema.py`) installs both: the grants
+for a dedicated `forge_app` role, *and* a trigger (`forge_events_are_append_only`) that
+raises on `UPDATE`, `DELETE` and `TRUNCATE` for every role, owner included.
+`tests/test_events_append_only.py` proves each layer, and the test suite runs the real
+migration rather than `create_all` precisely so that this guarantee is tested and not
+assumed. The claim in the title — immutability as a database property, not an
+application convention — is therefore true for the connection the platform actually uses.

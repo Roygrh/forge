@@ -2,15 +2,17 @@
 
 React 18 · Vite · TypeScript (strict) · Tailwind ([ADR-007](../../docs/adr/007-frontend-react-vite.md))
 
-**Scope:** four screens — the agent catalog, the **approval queue**, the run trace
-viewer, and the **eval suite with its publish gate**. Phase 4.1 filled the first with
-the real accounts-payable agents; Phase 4.4 added the queue, where a person releases or
-refuses an action a run has parked, with the evidence to decide it on the same screen;
-Phase 4.5 adds the Evals screen, where a version is scored against the 20 cases and the
-publish action is disabled — with its reason — until the gate is met. Full agent
-authoring and the knowledge screens are still deliberately absent — there is nothing
-behind them yet, and a screen that cannot enforce what it displays is worse than no
-screen.
+**Scope (complete at Phase 6.2):** five screens — the agent catalog with its **Case to
+run** picker, one run's trace, the **approval queue**, the **eval suite with its publish
+gate**, and the **metrics dashboard** with suspend and resume. The catalog reads the real
+accounts-payable agents' DNA (4.1); the queue is where a person releases or refuses an
+action a run has parked, with the evidence to decide it on the same screen (4.4); the
+Evals screen scores a version against the 20 cases and disables the publish action — with
+its reason — until the gate is met (4.5); Metrics shows per-agent figures projected from
+the event log and the circuit breaker's state (4.6); and the picker holds the five demo
+beats in order (6.1). Agent *authoring* and the knowledge screens are deliberately absent:
+authoring adds no governance the API's schema-validated draft endpoint does not already
+enforce, and a screen that cannot enforce what it displays is worse than no screen.
 
 ## Run it
 
@@ -144,8 +146,10 @@ Endpoints consumed, all read-only except the one that starts a run:
 | `GET /runs/{id}` · `GET /runs/{id}/trace` | Run view: header, timeline, raw events |
 | `GET /approvals` · `POST /approvals/{id}/approve` · `POST /approvals/{id}/reject` | The queue, and the two decisions there are |
 | `GET /approvals/report` | The autonomy-promotion report, read-only (FR-E5) |
-| `GET /eval/suites` · `POST /eval/suites/{id}/run` · `GET /eval/runs?agent_version_id=` | Evals: the suite, running it, and the gate's state per version |
+| `GET /eval/suites` · `POST /eval/suites/{id}/run` · `GET /eval/runs?agent_version_id=` · `GET /eval/runs/{id}` | Evals: the suite, running it, and the gate's state per version |
 | `POST /agents/{id}/versions/{v}/publish` | The publish action — answered 409 by the server while the gate is unmet (FR-F2) |
+| `GET /metrics` · `GET /agents/{id}/metrics` | Metrics: the dashboard, and one agent's figures projected from events (FR-G3) |
+| `POST /agents/{id}/versions/{v}/suspend` · `POST .../resume` | Suspend (configurator or admin) and resume (admin only) from the metrics dashboard (FR-G4) |
 
 ## Layout
 
@@ -153,11 +157,12 @@ Endpoints consumed, all read-only except the one that starts a run:
 |---|---|
 | `src/api/types.ts` | The API shapes, mirrored from `openapi.yaml` and `app/api/schemas.py` |
 | `src/api/client.ts` | The single path to the API: base URL, role header, typed errors |
-| `src/App.tsx` | Four routes over `window.location.hash`: `#/`, `#/approvals`, `#/evals`, `#/runs/<id>` |
+| `src/App.tsx` | Five routes over `window.location.hash`: `#/`, `#/approvals`, `#/evals`, `#/metrics`, `#/runs/<id>` |
 | `src/screens/AgentsScreen.tsx` | The catalog: each agent's model, tool grants, guardrails, a **Case to run** picker over the demo story, and a Run button |
 | `src/screens/RunScreen.tsx` | One run: outcome header, timeline, raw events |
 | `src/screens/ApprovalsScreen.tsx` | The queue: proposed action, rules in play, evidence, Approve/Reject, and the read-only promotion report |
 | `src/screens/EvalsScreen.tsx` | The suite, per-case expected-vs-actual with every assert, and the publish action with the gate's state said in words |
+| `src/screens/MetricsScreen.tsx` | Per-agent runs, auto-approval and escalation rates, block rate by reason code, cost and latency — all projected from events — plus suspend/resume with the breaker's state |
 | `src/components/Timeline.tsx` | The ordered steps — reason, tool, decision, the platform’s own **blocked** step, and a person’s **approval** — each rendered for what it is |
 | `src/components/RawEvents.tsx` | The append-only log the timeline was projected from (ADR-008) |
 | `src/components/Pill.tsx` | The badge vocabulary: one colour per state, exhaustive over the contract's unions |
@@ -217,9 +222,9 @@ Endpoints consumed, all read-only except the one that starts a run:
   naming the permission it lacked, and that is what the screen renders. Mirroring
   `ROLE_PERMISSIONS` here would be a second definition of governance, free to drift from
   the one that is enforced.
-- **No router, no state library, no component library.** Three routes over the URL hash,
-  one `useAsync` hook, one `useSyncExternalStore` for the acting role, and Tailwind. Each of those would be a dependency carried for a screen
-  that does not need it.
+- **No router, no state library, no component library.** Five routes over the URL hash,
+  one `useAsync` hook, one `useSyncExternalStore` for the acting role, and Tailwind. Each
+  of those would be a dependency carried for a screen that does not need it.
 - **The compose image serves the production build, and stays environment-independent.**
   Phase 5.1 replaced the Vite dev server with `npm run build` behind nginx. The reason the
   dev server was there — Vite inlines `VITE_*` at build time, so a static image would need

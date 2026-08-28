@@ -46,3 +46,16 @@ and code to the same state — essential when the DNA schema is the central cont
   because Forge ships as one product with one version.
 - Bad: repo size grows with docs and seed data; mitigated by keeping generated
   artifacts out of git.
+
+## Amendment — Phase 6.2 (2026-08-26)
+
+The layout stands. One correction to the sketch above: **seed data does not live in
+`deploy/`**. The governed rule set, the knowledge corpus, the eval cases, the simulated
+ERP's records and the agent definitions are all Python and JSON under `src/backend/`
+(`app/rules/catalog.py`, `app/knowledge/documents.py`, `app/evals/catalog.py`,
+`app/erp/seed_data.py`, `app/dna/agents/`), applied by `scripts/seed.py`, which the
+compose `migrate` container runs. `deploy/` holds `docker-compose.yml` and `.env.example`
+only. The reason is the one the image build forced: the backend image's build context is
+`src/backend`, so anything the seed needs has to travel inside the package — which is
+also why `app/dna/` vendors byte-identical copies of the schema and the example
+definitions from `docs/`, with a test that fails if they drift.

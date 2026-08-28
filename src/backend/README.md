@@ -2,30 +2,25 @@
 
 Python 3.12 · FastAPI · SQLAlchemy 2 · PostgreSQL 16 + pgvector ([ADR-002](../../docs/adr/002-backend-python-fastapi.md), [ADR-004](../../docs/adr/004-postgres-single-store.md))
 
-**Phase 4.4 scope:** the human in the loop. A `requires_approval` tool call now opens a
-pending approval with a **server-side deadline**, and the run waits in
-`awaiting_approval` — the one state a run comes back from. It leaves that state in
-exactly three ways: an approver releases it (the run resumes and executes *that* action,
-with *those* arguments, through the same tool gateway), refuses it (the run is canceled),
-or the deadline passes with nobody deciding — which also **cancels**, because an approval
-that ran out of time is never a yes, and there is no operation anywhere in this API that
-extends one. The queue serves the evidence to decide each item with the item itself, and
-the autonomy-promotion report (FR-E5) measures approval rates per action category and
-applies nothing. Where this build cannot honour something, it refuses rather than
+**State at close (Phase 6.2, 2026-08-26): every build phase complete, 247 tests, 20/20
+evals, no further features planned.** The platform this service implements: a single
+runtime executing any schema-valid DNA (4.1); autonomy levels enforced at one gateway that
+cannot be bypassed, every refusal carrying a machine-readable reason code, a plain-language
+explanation and a governance step in the trace, and the DNA's hard limits enforced (4.2);
+knowledge retrieval that ranks conflicting sources by authority rather than averaging them
+and cites what it used (4.3); a human in the loop — a `requires_approval` tool call opens a
+pending approval with a **server-side deadline** and the run waits in `awaiting_approval`,
+the one state a run comes back from, leaving it in exactly three ways: released (the run
+resumes and executes *that* action, with *those* arguments, through the same gateway),
+refused (canceled), or expired (**also canceled** — an approval that ran out of time is
+never a yes, and there is no operation anywhere in this API that extends one) (4.4);
+publishing eval-gated for real, a hard 409 until the version's declared suite has passed
+(4.5); per-agent metrics projected from the event log plus the circuit breaker (4.6); a
+from-scratch start that works on the first attempt — migrate and seed run themselves, the
+health route split into liveness and readiness, every environment variable documented in a
+committed template (5.1); and the five-beat demo story as data, asserted end to end on
+every build (6.1). Where this build cannot honour something, it refuses rather than
 approximates.
-
-**Phase 4.5** made publishing eval-gated for real (a hard 409 until the version's
-declared suite has passed) and **4.6** added per-agent metrics projected from the event
-log plus the circuit breaker. **Phase 5.1** changed no capability at all: it made a
-from-scratch start work on the first attempt — migrate and seed run themselves, the
-health route split into liveness and readiness, and every environment variable is
-documented in a committed template.
-
-Earlier phases still hold: the autonomy levels are enforced in one place and cannot be
-bypassed (4.2); every refusal carries a machine-readable reason code, a plain-language
-explanation, and a governance step in the trace; the DNA's hard limits are enforced; and
-knowledge retrieval ranks conflicting sources by authority rather than averaging them
-(4.3).
 
 ## Quickstart (one command)
 
@@ -172,11 +167,13 @@ Lint, format, and types:
 | `app/rules/` | The governed rule set as data: the condition grammar, a general interpreter for it, the seed encoding of the tacit-rules document, and the loader |
 | `app/dna/` | The DNA contract: vendored JSON Schema (write-time) + typed Pydantic view (read-time) |
 | `app/llm/` | The LLM gateway ([ADR-005](../../docs/adr/005-llm-adapter-layer.md)): one `complete()` contract, budget enforcement, three adapters |
-| `app/tools/` | The tool registry and gateway — the only path from an agent to a tool (FR-C1) — plus the eight MeridianERP and rule-lookup tools (FR-C4) |
+| `app/tools/` | The tool registry and gateway — the only path from an agent to a tool (FR-C1) — plus the nine registered tools: seven MeridianERP tools (FR-C4), rule lookup (`meridian-ap-rules-query`) and knowledge retrieval (`meridian-knowledge-retrieve`) |
+| `app/knowledge/` | The knowledge layer (FR-D1..D5): document chunking and ingestion, the embedding provider (a deterministic hashing embedder by default), hybrid retrieval with RRF fusion, the authority hierarchy, conflict detection and remediation items |
+| `app/observability/` | Per-agent metrics projected from `events` at read time (FR-G3) and the circuit breaker that suspends a version over a trailing window (FR-G4) |
 | `app/runtime/` | The loop ([ADR-003](../../docs/adr/003-custom-agent-runtime.md)), structured-output validation ([ADR-006](../../docs/adr/006-structured-outputs.md)), the trace writer/reader, and the transcript a paused run is resumed from ([ADR-010](../../docs/adr/010-resume-by-replay.md)) |
 | `app/approvals/` | The human-in-the-loop queue: parking, approve/reject, server-side expiry that cancels, the evidence an approver is shown, and the read-only autonomy-promotion report (FR-E1..E5) |
 | `app/evals/` | The 20 eval cases as data (the executable form of `06-eval-cases.md`) and the runner that scores a version by programmatic asserts — the publish gate's evidence (FR-F1..F3) |
-| `app/api/` | Agent-catalog (read, draft authoring, the **eval-gated publish**), run, **approval**, knowledge and **eval** endpoints, the error shape, and the gateway dependencies |
+| `app/api/` | Agent-catalog (read, draft authoring, the **eval-gated publish**, suspend, resume), run, **approval**, knowledge, **eval** and **metrics** endpoints, the error shape, and the gateway dependencies. The served contract is `GET /api/v1/openapi.json`; `docs/02-architecture/api/openapi.yaml` is the authored one, and marks the three operations it declares that this build does not serve |
 | `app/api/health.py` | The two probes: dependency-free **liveness**, and **readiness** that gates on the database, the migration head, and a populated catalog |
 | `alembic/` | Migration environment; the URL comes from settings, never from `alembic.ini` |
 | `scripts/init_db.py` | The whole of a cold start: wait for the database with a real `SELECT 1`, `alembic upgrade head`, then seed. What the compose `migrate` container runs |
@@ -185,7 +182,8 @@ Lint, format, and types:
 | `scripts/run_evals.py` | The one command of FR-F1: runs the suite against a version, prints per-case pass/fail, records the `eval_runs` row the publish gate reads, exits non-zero on failure |
 | `scripts/demo_hitl.py` | Drives the approval queue over the real HTTP surface and prints both traces: one parked-approved-resumed-executed, one parked-expired-canceled |
 | `scripts/demo_publish_gate.py` | Drives the publish gate over the real HTTP surface: a draft refused with 409, the suite passing 20/20, the same publish succeeding with its evidence |
-| `tests/` | **Liveness and readiness** (including the 503 paths — nothing published, schema unstamped), config, models, append-only, DNA contract, both gateways, output validation, the rule layer, **governance** (autonomy matrix, fail-closed matrix, hard limits, SoD), the AP agents end to end, the catalog, the runtime, **approvals** (approve/reject/expire, granularity, segregation of duties, and the absence of any extend operation), and **evals** (the 20 cases green, the hard 409, the gate's honesty against a restricted definition) |
+| `scripts/demo_observability.py` | Drives Phase 4.6 over the real HTTP surface against a throwaway database: mixed outcomes and their metrics, the breaker tripping and refusing the next start, and an admin resuming it on the record |
+| `tests/` | 247 tests: **liveness and readiness** (including the 503 paths — nothing published, schema unstamped), config, models, append-only, DNA contract, both gateways, output validation, the rule layer, **governance** (autonomy matrix, fail-closed matrix, hard limits, SoD), the AP agents end to end, the catalog, the runtime, **knowledge** (hybrid retrieval, authority, conflicts, citations), **approvals** (approve/reject/expire, granularity, segregation of duties, and the absence of any extend operation), **evals** (the 20 cases green, the hard 409, the gate's honesty against a restricted definition), **observability** (metrics as projections, the breaker), and the **demo story** (every beat, end to end) |
 
 ## Notes for reviewers
 
@@ -194,12 +192,12 @@ Lint, format, and types:
   `forge_app` role, *and* a trigger that raises on `UPDATE`/`DELETE`/`TRUNCATE` — because
   PostgreSQL exempts a table's owner from its own grants, and the demo connects as the
   owner. `tests/test_events_append_only.py` proves both.
-- **Models carry no `relationship()` definitions.** Phase 3.1 needs plain table
-  mappings; lazy relationship loading in async handlers is a footgun best introduced
-  with the queries that actually need it.
-- **`knowledge_chunks.embedding` is a dimensionless `vector`.** The width is fixed by
-  the embedding model, chosen with the knowledge layer in Phase 4.3, along with its ANN
-  index. Guessing a width now would bake a decision into the schema.
+- **Models carry no `relationship()` definitions.** Plain table mappings throughout;
+  lazy relationship loading in async handlers is a footgun, and no query has needed one.
+- **`knowledge_chunks.embedding` is a dimensionless `vector`.** The width belongs to the
+  embedding provider (`app/knowledge/embeddings.py` — a deterministic hashing embedder by
+  default, a learned model by configuration), and at this corpus size (32 chunks)
+  retrieval is a sequential scan, so no ANN index forces the choice.
 - **Two engines, one URL.** psycopg 3 serves sync and async behind one SQLAlchemy
   dialect, so migrations and the API cannot drift onto different databases.
 - **Windows dev machines**: `app/main.py` selects the selector event loop, which
@@ -216,9 +214,10 @@ Lint, format, and types:
   `tool_invocations` row and a `tool.called` event: a reviewer must be able to see what
   the agent *tried* to do, not only what it was allowed to do (FR-C5).
 - **The runtime refuses DNA it cannot honestly execute.** A definition declaring
-  instruction blocks or knowledge collections is valid, but this build cannot resolve
-  either — running it anyway would silently execute a less-informed agent than the one
-  published, so the run escalates with `unsupported_definition` instead.
+  instruction `system_blocks` (FR-A5) is valid, but this build cannot resolve them —
+  running it anyway would silently execute a less-informed agent than the one published,
+  so the run escalates with `unsupported_definition` instead. Knowledge collections came
+  off that list in 4.3: they are resolved, and the gateway scopes retrieval to them.
 - **Three LLM adapters, one contract.** `FakeAdapter` replays a script (tests),
   `MeridianDemoAdapter` derives each turn from the conversation so far (so a fresh stack
   demos without a key), and `AnthropicAdapter` makes real calls. The runtime cannot tell
@@ -229,13 +228,14 @@ Lint, format, and types:
 - **The vendored `app/dna/dna-schema.json` is byte-identical to the docs original.**
   The image build context is `src/backend` and cannot reach `docs/`, so the schema is
   vendored; `tests/test_dna_schema.py` fails if the two ever diverge.
-- **The agent catalog is read-only, and that is the governance answer.** `GET /agents`
-  and `GET /agents/{id}/versions` exist so the SPA can find something published to run.
-  The write half — create agent, create draft version, publish, suspend — is absent
-  because publishing is eval-gated (FR-F2) and there is no eval runner yet; a publish
-  endpoint that could not enforce its gate would be a hole, not a head start. Both
-  endpoints implement `openapi.yaml` as already written, so no contract changed to add
-  them.
+- **The catalog's write half arrived with the gate, not before it.** `GET /agents` and
+  `GET /agents/{id}/versions` shipped first so the SPA could find something published to
+  run; draft authoring (`POST /agents/{id}/versions`, schema-validated, 400 with every
+  violation), the eval-gated publish, suspend and resume followed in 4.5–4.6, once the
+  eval runner existed to enforce the gate — a publish endpoint that could not enforce it
+  would have been a hole, not a head start. Two declared operations remain unserved and
+  are marked so in `openapi.yaml`: `POST /agents` (agents are created by the seed) and
+  `GET /tools` (the registry is code).
 - **`total_cost_usd` is an exact decimal string on the wire, not a JSON number.** That is
   what the implementation always did; `openapi.yaml` said `number` and was corrected to
   match in Phase 3.3 (golden rule 5). Rounding an audit figure through a float is not
@@ -295,8 +295,8 @@ Lint, format, and types:
   click away in the catalog rather than a paragraph here.
 - **Publishing in the seed bypasses the eval gate, once and visibly.** The seeded
   versions are published with `published_eval_run_id` left null, so a reviewer can tell a
-  seeded version from one that earned its publish. The real gate (409 unless the suite
-  passed, FR-F2) arrives with the eval runner in Phase 4.5.
+  seeded version from one that earned its publish. It is the one documented exception:
+  everything else goes through the 409 (FR-F2), and `tests/test_evals.py` holds it there.
 - **Business rules are rows, not branches.** R-001 … R-092 live in the `rules` table with
   their statements, authority levels, and machine-evaluable conditions. The validator
   agent retrieves them through the tool gateway (`query_rules`) and reasons over what it
@@ -305,14 +305,13 @@ Lint, format, and types:
   the rule set per request, so the next run decides differently with nothing to invalidate
   and nothing to rebuild. `tests/test_ap_agents.py` proves it by lowering a threshold
   mid-suite and watching the same invoice change outcome.
-- **Rule retrieval is a tool in this phase, and the C4 model says it will not stay one.**
-  [`workspace.dsl`](../../docs/02-architecture/c4/workspace.dsl) has the runtime
-  retrieving governed rules from the knowledge component; here it retrieves them through
-  the tool gateway (`query_rules`), because the knowledge layer does not exist yet and a
-  tool call is at least fully validated, authorised, and traced. Phase 4.3 replaces the
-  tool with authority-ranked retrieval over the same rule ids plus the policy documents,
-  and the C4 model becomes true rather than aspirational. The payload `query_rules`
-  returns is already shaped like what that retrieval will hand back.
+- **Rule lookup and knowledge retrieval are tools, and they are staying tools.** The
+  runtime reaches governed knowledge only through the tool gateway — `query_rules`
+  (`meridian-ap-rules-query`) for the evaluable rule set, `search_knowledge`
+  (`meridian-knowledge-retrieve`) for authority-ranked retrieval over the rules and the
+  policy documents. What an agent may *read* is therefore a grant in its DNA, validated,
+  scoped to its declared collections, and traced exactly like a write. The C4 model
+  ([`workspace.dsl`](../../docs/02-architecture/c4/workspace.dsl)) draws it that way.
 - **The rule encoding cannot drift from the document that owns it.**
   `app/rules/catalog.py` is the machine-readable form of
   [`04-tacit-rules.md`](../../docs/01-discovery/04-tacit-rules.md), and

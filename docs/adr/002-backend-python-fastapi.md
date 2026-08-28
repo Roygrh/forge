@@ -42,3 +42,15 @@ I/O-bound demo and its schema/validation story is weaker.
   at the API boundary — mitigated by generating frontend types from OpenAPI.
 - Bad: Python's runtime typing is opt-in; enforced via mypy + ruff in CI, and
   Pydantic at every boundary (convention in CLAUDE.md).
+
+## Amendment — Phase 6.2 (2026-08-26)
+
+The decision stands. Two consequences above named "CI" as the enforcement point; the
+repository at close has **no CI pipeline**, by scope. What exists is the local, documented
+equivalent, run before every phase commit and recorded in `docs/PROJECT-STATE.md`:
+`ruff check .`, `ruff format --check .`, `mypy app scripts tests` (clean at close) and
+`pytest` (247 tests) from `src/backend`, and `tsc --noEmit` from `src/frontend`, which
+also runs inside the frontend image build so a type error fails the build. Frontend types
+are hand-written and cite the backend module each shape mirrors (see the ADR-007
+amendment) rather than generated from OpenAPI. Adding a pipeline that runs exactly those
+commands is the first item for any continuation, and changes no decision here.

@@ -46,7 +46,15 @@ permission fails closed.
 **Knowledge Retrieval** serves governed rules and policy documents via hybrid
 semantic + lexical search (pgvector plus lexical matching, [ADR-004](../adr/004-postgres-single-store.md)),
 applies the authority hierarchy (`sme_validated` > `policy_2023` > `policy_2019`), and
-returns citations. Conflicts are surfaced, never silently averaged.
+returns citations. Conflicts are surfaced, never silently averaged. It is reached **only
+through the Tool Gateway**: rule lookup (`meridian-ap-rules-query`) and retrieval
+(`meridian-knowledge-retrieve`) are registered tools, granted in the DNA and scoped by
+the gateway to the collections the definition declares — so what an agent may *read* is
+validated, authorised and traced exactly like what it may write.
+
+Email intake is modelled as an external system but not simulated in this build: the
+invoices the agents read are pre-loaded in the simulated MeridianERP's seed
+(`app/erp/seed_data.py`), one per evaluation case.
 
 ## 4. Governance — *cross-cutting, not a box*
 
@@ -63,17 +71,21 @@ land almost entirely in this layer.
 
 ## 5. Experience layer — *how humans work with it*
 
-The **Web App** maps one-to-one onto three components: the catalog edits DNA through the
-DNA Registry, the approval queue works through the Approval Service, and the trace viewer
-reads run traces as projections of the append-only event log. Because the UI reads what
-was actually recorded, "the screen shows exactly what happened" is true by construction
-([ADR-008](../adr/008-append-only-audit.md)).
+The **Web App** has five screens over the same components: the catalog reads DNA from
+the DNA Registry and drives the lifecycle (publish, suspend, resume — it does not author
+documents, which is the API's `POST /agents/{id}/versions`), the run view and the metrics
+dashboard read projections of the append-only event log, the approval queue works through
+the Approval Service, and the Evals screen runs the suite and shows the publish gate's
+state. Because the UI reads what was actually recorded, "the screen shows exactly what
+happened" is true by construction ([ADR-008](../adr/008-append-only-audit.md)).
 
 ---
 
-Physically, everything above ships as three container images plus seed data via Docker
-Compose ([ADR-009](../adr/009-docker-compose-deployment.md)); the same images serve a
-future cloud instance.
+Physically, everything above ships as two application images (`forge-backend`,
+`forge-web`) plus PostgreSQL 16 with pgvector via Docker Compose
+([ADR-009](../adr/009-docker-compose-deployment.md)), migrated and seeded by a one-shot
+container. The same images would serve a public instance; that instance was deferred by
+decision at Phase 5.2 (charter §10, ADR-009 amendment).
 
 ## Open questions
 

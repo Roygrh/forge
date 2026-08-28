@@ -1,9 +1,10 @@
 # Sequence — Agent run (happy path, end to end)
 
 The routine invoice path: an invoice arrives, the runtime loads the **pinned** DNA
-version, assembles authority-ranked knowledge, calls the model through the LLM gateway
-(structured output, one bounded retry then escalate), then issues an `auto_approve`
-tool call that the tool gateway validates and executes. Every model call, tool call,
+version, retrieves the governed rules **through the tool gateway** (rule lookup and
+knowledge retrieval are registered tools, granted in the DNA like any other), calls the
+model through the LLM gateway (structured output, one bounded retry then escalate), then
+issues an `auto_approve` tool call that the same gateway validates and executes. Every model call, tool call,
 rule, and decision is appended to the event log as it happens. This is E-01/E-02 shape.
 
 ```mermaid
@@ -17,10 +18,12 @@ sequenceDiagram
     participant ERP
 
     Intake->>Runtime: New invoice (PO-matched, trusted vendor)
-    Runtime->>DB: Load pinned DNA (invoice-validator@1.0.0)
+    Runtime->>DB: Load pinned DNA (invoice-validator@1.2.0)
     Runtime->>DB: Open run, append run.started event
-    Runtime->>KB: Retrieve applicable rules
-    KB-->>Runtime: R-001, R-010 (authority-ranked, with citations)
+    Runtime->>ToolGW: query_rules (a granted tool, validated and traced)
+    ToolGW->>KB: Retrieve applicable rules
+    KB-->>ToolGW: R-001, R-010 (authority-ranked, with citations)
+    ToolGW-->>Runtime: Rules as evidence
     Runtime->>LLMGW: complete(messages, tools, schema, budget)
     alt Structured output valid (ADR-006)
         LLMGW-->>Runtime: Decision + tool call (schema-valid)
@@ -28,7 +31,7 @@ sequenceDiagram
         ToolGW->>ToolGW: Validate args vs tool schema
         ToolGW->>ToolGW: Check autonomy = autonomous (least privilege)
         ToolGW->>ERP: Execute approve_invoice
-        ERP-->>ToolGW: OK (payment scheduled)
+        ERP-->>ToolGW: OK (invoice approved)
         ToolGW-->>Runtime: Result
         Runtime->>DB: Append decision auto_approve (cites R-001, R-010)
     else Invalid: 1 bounded retry then escalate
@@ -40,10 +43,12 @@ sequenceDiagram
 
 ## What to notice
 
-- **DNA is pinned per run** — the run loads `invoice-validator@1.0.0`; a historical run
+- **DNA is pinned per run** — the run loads `invoice-validator@1.2.0`; a historical run
   always references the exact version that produced it (FR-A3, DNA versioning).
 - **Knowledge is authority-ranked and cited** — KB returns rule IDs with citations, so
-  the decision can satisfy `require_citations` (R-092).
+  the decision can satisfy `require_citations` (R-092). It is reached through the tool
+  gateway (`meridian-ap-rules-query`, `meridian-knowledge-retrieve`): what an agent may
+  read is a grant in its DNA, validated and traced exactly like a write.
 - **One bounded retry, then escalate** — the `else` branch is ADR-006's fail-closed
   rule: malformed output never becomes an action; it becomes a human escalation.
 - **The tool gateway is the only path to ERP** — args are schema-validated and the

@@ -6,20 +6,26 @@ An agent in Forge is not code. It is one JSON document — its **DNA** — valid
 [`dna-schema.json`](./dna-schema.json) (JSON Schema draft 2020-12). The DNA declares
 everything the agent is and may do: identity and version, instructions, tool grants
 with autonomy levels, knowledge collections, model and budgets, guardrails, and its
-evaluation suite. See [`dna-examples/`](./dna-examples/) for the three shipped Meridian
-agents — [`invoice-intake`](./dna-examples/invoice-intake.agent.json),
+evaluation suite. See [`dna-examples/`](./dna-examples/) for the shipped Meridian agents —
+[`invoice-intake`](./dna-examples/invoice-intake.agent.json),
 [`invoice-validator`](./dna-examples/invoice-validator.agent.json), and
 [`invoice-comms`](./dna-examples/invoice-comms.agent.json). They are the same document
 in three degrees of authority, which is the clearest reading of what this contract buys:
 intake is granted one read-only tool, the validator may approve up to a ceiling declared
 in its grant and is explicitly *forbidden* to schedule payments, and comms may contact a
 vendor only through a human approval. Nothing but the documents differs — one runtime
-executes all three.
+executes all three. A fourth document,
+[`invoice-validator-restricted`](./dna-examples/invoice-validator-restricted.agent.json),
+is the validator with `approve_invoice` granted `forbidden` and nothing else changed: it
+is shipped to be refused, so that the platform stopping an agent is one click away.
 
-> `knowledge.collections` is empty in all three until Phase 4.3: the runtime refuses to
-> run a definition whose collections it cannot resolve, rather than silently executing a
-> less-informed agent than the one published. Governed rules reach the validator through
-> the `query_rules` tool grant in the meantime.
+> Knowledge reaches an agent through tool grants, scoped by its DNA. The validator
+> declares three `knowledge.collections` (the SME-validated rules and the 2023 and 2019
+> policy documents) and is granted `meridian-knowledge-retrieve`, which the gateway scopes
+> to exactly those collections; rule lookup is the `meridian-ap-rules-query` grant. A
+> definition that declares instruction `system_blocks` is still refused by the runtime
+> (`unsupported_definition`) rather than executed less-informed than published — FR-A5 is
+> the one declared capability this build does not resolve.
 
 ## Contract philosophy
 
